@@ -21,3 +21,7 @@ jobs:
         run: pytest -q
         env:
           PYTHONPATH: .
+      - name: Evals
+        run: python evals/run_evals.py
+        env:
+          PYTHONPATH: .
