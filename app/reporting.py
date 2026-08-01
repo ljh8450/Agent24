@@ -33,9 +33,9 @@ def _safe_frame(columns: list[str], rows: list[dict[str, object]]) -> pd.DataFra
     )
 
 
-def _great_table(title: str, subtitle: str, columns: list[str], rows: list[dict[str, object]]) -> str:
+def _great_table(title: str, columns: list[str], rows: list[dict[str, object]]) -> str:
     """One rendering harness for all display tables, including predictable empty tables."""
-    return GT(_safe_frame(columns, rows)).tab_header(title=title, subtitle=subtitle).as_raw_html()
+    return GT(_safe_frame(columns, rows)).tab_header(title=title).as_raw_html()
 
 
 def report_tables(run: dict[str, Any]) -> dict[str, tuple[list[str], list[dict[str, object]]]]:
@@ -152,15 +152,6 @@ def report_tables(run: dict[str, Any]) -> dict[str, tuple[list[str], list[dict[s
         for item in policy_review.get("panel", [])
     ]
 
-    activity_columns = ["도구/이벤트", "상태", "기록 시각"]
-    activity_rows = [
-        {
-            "도구/이벤트": event.get("payload", {}).get("tool") or event.get("type"),
-            "상태": event.get("type"),
-            "기록 시각": event.get("created_at"),
-        }
-        for event in run.get("events", [])
-    ]
     return {
         "summary": (summary_columns, summary_rows),
         "sources": (source_columns, source_rows),
@@ -169,7 +160,6 @@ def report_tables(run: dict[str, Any]) -> dict[str, tuple[list[str], list[dict[s
         "policy": (policy_columns, policy_rows),
         "personas": (persona_columns, persona_rows),
         "panel": (panel_columns, panel_rows),
-        "activity": (activity_columns, activity_rows),
     }
 
 
@@ -288,7 +278,7 @@ def render_html_report(run: dict[str, Any]) -> str:
     bars_section = _response_bars(policy_review.get("alternatives", []), policy_review.get("responses") or {})
 
     table_html = "\n".join(
-        _great_table(title, "프로젝트 로컬 provenance artifact", *tables[key])
+        _great_table(title, *tables[key])
         for key, title in (
             ("summary", "실행 요약"),
             ("sources", "출처 원장"),
@@ -299,7 +289,6 @@ def render_html_report(run: dict[str, Any]) -> str:
             ("panel", "가중 가상 시민 패널"),
         )
     )
-    activity_html = _great_table("도구 실행 이력", "실행 재현용 이벤트 로그", *tables["activity"])
 
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -339,11 +328,10 @@ def render_html_report(run: dict[str, Any]) -> str:
   table.gt_table {{ width:100% !important; margin:0 0 22px !important; background:#fff; border-collapse:collapse; font-size:12.5px; }}
   table.gt_table th {{ color:#55524a; background:var(--panel); font-weight:600; }}
   table.gt_table th, table.gt_table td {{ border-bottom:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }}
-  details {{ margin:8px 0 22px; }} details summary {{ cursor:pointer; color:var(--muted); font-size:13px; }}
   footer {{ margin-top:52px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12px;
             font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }}
   @media (max-width:640px) {{ .bar-row {{ grid-template-columns:1fr; gap:4px; }} body {{ padding:28px 18px 56px; }} }}
-  @media print {{ body {{ padding:22px; }} details {{ open:true; }} }}
+  @media print {{ body {{ padding:22px; }} }}
 </style></head><body>
 <header><span class="eyebrow">E2P AGENT · PROVENANCE-AWARE SYNTHETIC POLICY RESEARCH</span>
 <h1>정책 검토 보고서</h1><p class="question">{question}</p>
@@ -353,11 +341,10 @@ def render_html_report(run: dict[str, Any]) -> str:
 {bars_section}
 <h2>근거와 계산</h2>
 {table_html}
-<details><summary>도구 실행 이력 열기</summary>{activity_html}</details>
 <h2>해석 한계</h2><ul>
 <li>승인된 제약만 계산에 사용했습니다. 모집단·시점·범주 매핑은 출처 원장과 함께 재검토해야 합니다.</li>
 <li>점추정은 구조 가정에 의존하며, 식별구간과 구별해야 합니다.</li>
 <li>합성 페르소나와 모의 인터뷰는 실제 개인·실제 응답·대표 표본이 아닙니다.</li>
 </ul>
-<footer>run id: {escape(_text(run.get("id")))} · status: {escape(_text(run.get("status")))} · 로컬 provenance artifact</footer>
+<footer>run id: {escape(_text(run.get("id")))} · status: {escape(_text(run.get("status")))}</footer>
 </body></html>"""
