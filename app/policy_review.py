@@ -26,6 +26,24 @@ INDIVIDUAL_DECISIONS = ("자동판정", "자동결정", "판정", "심사", "선
 SENSITIVE_ATTRIBUTES = ("우울", "정신질환", "질병", "성격", "정치성향")
 
 
+def _constructive_plan_text(raw: dict[str, Any]) -> str:
+    """Only the fields that decide what gets built.
+
+    rights_review, interview_questions and evidence_queries exist to *name* restrictions
+    ("소득 기준이 접근을 제한할 수 있다"), so scanning them made an honest rights finding
+    look like a request to screen individuals and silently discarded good plans.
+    """
+    parts = [str(raw.get("policy_focus", "")), str(raw.get("target_population", ""))]
+    for variable in raw.get("variables") or []:
+        if isinstance(variable, dict):
+            parts.append(str(variable.get("label", "")))
+            parts.extend(str(category) for category in variable.get("categories") or [])
+    for alternative in raw.get("alternatives") or []:
+        if isinstance(alternative, dict):
+            parts.extend(str(alternative.get(field, "")) for field in ("label", "hypothesis"))
+    return " ".join(parts)
+
+
 def _contains_unsafe_plan_content(value: str) -> bool:
     compact = _compact_safety_text(value)
     return any(term in compact for term in SENSITIVE_ATTRIBUTES) or (
@@ -316,7 +334,7 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
     """Validate a model-designed plan; any violation falls back to the keyword templates."""
     if not isinstance(raw, dict):
         return None
-    if _contains_unsafe_plan_content(str(raw)):
+    if _contains_unsafe_plan_content(_constructive_plan_text(raw)):
         return None
     request_type = raw.get("request_type")
     if request_type not in ("plan_review", "audience_understanding"):
@@ -427,7 +445,8 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
         assumptions = assumptions + llm_plan["assumptions"]
         rights_review = llm_plan["rights_review"] or theme.get("rights_review")
     else:
-        plan_source = "keyword_template"
+        # 모델이 플랜을 돌려줬는데도 폴백이면 검증에서 탈락한 것 — 조용히 넘기면 진단이 불가능하다.
+        plan_source = "keyword_template_after_rejected_llm_plan" if llm_raw else "keyword_template"
         policy_domain = theme["id"]
         policy_focus = theme["label"]
         kosis_search_terms = [theme["label"]]
