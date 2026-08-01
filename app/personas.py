@@ -5,7 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
@@ -114,12 +114,18 @@ def _call_json_model(prompt: str, model: str | None = None) -> dict[str, Any]:
             with urllib.request.urlopen(request, timeout=120) as response:
                 body = json.loads(response.read().decode())
             return json.loads(body["choices"][0]["message"]["content"])
+        except urllib.error.HTTPError as error:
+            last_error = error
+            if error.code != 429 and error.code < 500:
+                break  # 인증·요청 오류는 재시도해도 같다 — 즉시 실패
         except (KeyError, OSError, TimeoutError, ValueError, urllib.error.URLError) as error:
             last_error = error
-            if attempt == 0:
-                time.sleep(1.5)
+        if attempt == 0:
+            time.sleep(1.5)
     raise DomainError(
-        "LLM_JSON_FAILED", "모델의 JSON 응답을 검증하지 못했습니다.", details={"reason": type(last_error).__name__}
+        "LLM_JSON_FAILED",
+        "모델의 JSON 응답을 검증하지 못했습니다.",
+        details={"reason": type(last_error).__name__, "status": getattr(last_error, "code", None)},
     ) from last_error
 
 
@@ -483,7 +489,6 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
     """
     alternatives = list(plan.get("alternatives", []))
     questions = list(plan.get("interview_questions", []))
-    expected = {(segment["id"], policy["id"]) for segment in panel for policy in alternatives}
     if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1":
         response_labels = ("support", "conditional", "low_change", "decline")
         interviews: list[dict[str, Any]] = []
@@ -521,7 +526,7 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
     segment_ids = {segment["id"] for segment in panel}
     valid_responses = {"support", "conditional", "low_change", "decline"}
 
-    def interview_alternative(policy: dict[str, Any]) -> list[dict[str, Any]]:
+    def interview_alternative(policy: dict[str, Any], feedback: str = "") -> list[dict[str, Any]]:
         prompt = (
             "You are generating fictional policy-testing interview answers for a weighted synthetic panel. "
             "These are not real people and may not be portrayed as representative opinions. "
@@ -530,6 +535,7 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
             "response (support|conditional|low_change|decline), reason, barrier, suggested_change. "
             "Write reason, barrier and suggested_change in Korean, one short sentence each, grounded only in that segment's sampled attributes; "
             "when an answer lacks a directly sampled attribute, say it is a hypothetical simulation.\n"
+            f"{feedback}"
             f"Policy under test: {json.dumps({'focus': plan.get('policy_focus'), 'label': policy.get('label'), 'description': policy.get('description'), 'hypothesis': policy.get('hypothesis')}, ensure_ascii=False)}\n"
             f"Interview questions: {json.dumps(questions, ensure_ascii=False)}\n"
             f"Weighted synthetic panel: {json.dumps(compact_panel, ensure_ascii=False)}"
@@ -566,9 +572,31 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
             for item in raw
         ]
 
+    def interview_with_repair(policy: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            return interview_alternative(policy)
+        except DomainError as error:
+            if error.code != "INVALID_POLICY_INTERVIEW_OUTPUT":
+                raise
+            return interview_alternative(
+                policy,
+                "Previous attempt broke the JSON contract (wrong segment ids, missing segments, or invalid fields). "
+                "Redo it and return exactly one item per panel segment with all required fields.\n",
+            )
+
+    # 정책안 단위 실패 격리: 한 정책안의 호출이 끝내 실패해도 나머지 인터뷰는 보존한다.
+    interviews: list[dict[str, Any]] = []
+    errors: list[DomainError] = []
     with ThreadPoolExecutor(max_workers=len(alternatives)) as pool:
-        grouped = list(pool.map(interview_alternative, alternatives))
-    interviews = [item for group in grouped for item in group]
-    if {(item["segment_id"], item["policy_id"]) for item in interviews} != expected:
-        raise DomainError("INVALID_POLICY_INTERVIEW_OUTPUT", "정책 인터뷰 모델이 안전한 JSON 계약을 지키지 않았습니다.")
+        futures = {pool.submit(interview_with_repair, policy): policy for policy in alternatives}
+        for future in as_completed(futures):
+            try:
+                interviews.extend(future.result())
+            except DomainError as error:
+                if error.code == "LLM_NOT_CONFIGURED":
+                    raise
+                errors.append(error)
+    if not interviews and errors:
+        raise errors[0]
+    interviews.sort(key=lambda item: (item["segment_id"], item["policy_id"]))
     return interviews
