@@ -32,6 +32,18 @@ python3.12 -m venv .venv
 
 브라우저에서 `http://127.0.0.1:8000`을 엽니다. 데이터베이스, 출처 스냅샷, run artifact는 전부 저장소의 `data/`에만 저장됩니다.
 
+데모 중 원본 실행 이벤트를 별도 화면에서 동시에 보려면 두 서버를 같은 저장소로 실행합니다.
+
+```bash
+.venv/bin/python scripts/run_servers.py
+```
+
+- 제품 화면: `http://127.0.0.1:8000`
+- 원본 이벤트 모니터: `http://127.0.0.1:8001`
+
+모니터는 제품 서버와 같은 SQLite WAL을 이벤트 ID 커서로 따라갑니다. `tool.started`와
+`tool.completed`/`tool.failed`는 각각 `tool_call`과 `tool_result` 배지 옆에 원본 JSON 그대로 실시간 출력됩니다.
+
 `.env.example`을 `.env`로 복사해 필요한 값만 채우면 서버 시작 시 자동으로 읽습니다(셸에서 export한 값이 우선).
 
 | 환경 변수 | 필수 | 용도 |

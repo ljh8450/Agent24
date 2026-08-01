@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071019">
+    <title>E2P Raw Event Monitor</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="monitor-shell">
+      <header class="monitor-header">
+        <div>
+          <p>E2P AGENT · SECOND SCREEN</p>
+          <h1>Raw event monitor</h1>
+        </div>
+        <div class="connection" id="connection"><i></i><span>CONNECTING</span></div>
+      </header>
+
+      <section class="monitor-controls" aria-label="이벤트 모니터 제어">
+        <label>RUN
+          <select id="run-filter" data-testid="run-filter"><option value="">모든 실행</option></select>
+        </label>
+        <label class="auto-scroll"><input id="auto-scroll" type="checkbox" checked> 새 이벤트 자동 추적</label>
+        <span class="event-count" id="event-count">0 EVENTS</span>
+        <button id="clear-events" type="button">화면 비우기</button>
+      </section>
+
+      <section class="event-feed" id="event-feed" aria-live="polite" data-testid="event-feed">
+        <div class="empty-state" id="empty-state"><span>_</span><p>원본 이벤트를 기다리는 중</p></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

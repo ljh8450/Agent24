@@ -169,6 +169,38 @@ class ProjectStore:
             for row in rows
         ]
 
+    def list_event_records(
+        self, after_id: int = 0, run_id: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Return append-only event rows without the run hydration used by the product UI."""
+        clauses = ["id > ?"]
+        parameters: list[Any] = [max(0, int(after_id))]
+        if run_id:
+            clauses.append("run_id = ?")
+            parameters.append(run_id)
+        parameters.append(min(max(1, int(limit)), 1000))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, run_id, event_type, payload_json, created_at
+                FROM events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY id
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "run_id": row["run_id"],
+                "type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def add_source(self, run_id: str, source: dict[str, Any]) -> None:
         self.get_run(run_id)
         with self._connect() as connection:

@@ -1,0 +1,57 @@
+:root {
+  color-scheme: dark;
+  --bg: #071019;
+  --surface: #0b1722;
+  --line: #1c3345;
+  --text: #d6e5ef;
+  --muted: #7790a2;
+  --call: #75c8ff;
+  --result: #77e0ae;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+body { overflow: hidden; }
+button, select, input { font: inherit; }
+.monitor-shell { display: grid; grid-template-rows: auto auto minmax(0, 1fr); width: 100%; height: 100%; }
+.monitor-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px 16px; border-bottom: 1px solid var(--line); background: #08131d; }
+.monitor-header p { margin: 0 0 5px; color: #5b7b91; font-size: 10px; letter-spacing: .16em; }
+.monitor-header h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.03em; }
+.connection { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; letter-spacing: .08em; }
+.connection i { width: 7px; height: 7px; border-radius: 50%; background: #d3a95d; box-shadow: 0 0 12px currentColor; }
+.connection.is-live { color: #77e0ae; }
+.connection.is-live i { background: currentColor; }
+.connection.is-retry { color: #ef8d8d; }
+.connection.is-retry i { background: currentColor; }
+.monitor-controls { display: flex; align-items: end; gap: 16px; min-height: 62px; padding: 10px 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.monitor-controls label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; letter-spacing: .08em; }
+.monitor-controls select { min-width: 340px; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; outline: 0; background: #071019; color: var(--text); font-size: 10px; }
+.monitor-controls .auto-scroll { display: flex; flex-direction: row; align-items: center; gap: 7px; height: 30px; color: var(--text); letter-spacing: 0; }
+.event-count { margin: 0 0 8px auto; color: var(--muted); font-size: 10px; }
+.monitor-controls button { height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; }
+.monitor-controls button:hover { background: #122536; color: var(--text); }
+.event-feed { min-height: 0; padding: 10px 0 80px; overflow-y: auto; }
+.empty-state { display: grid; height: 100%; place-content: center; justify-items: center; color: #385064; }
+.empty-state[hidden] { display: none; }
+.empty-state span { font-size: 26px; animation: blink 1s steps(1) infinite; }
+.empty-state p { margin: 8px 0; font-size: 11px; }
+.event-record { margin: 0; border-bottom: 1px solid #122738; background: transparent; }
+.event-record:hover { background: #0a1824; }
+.event-record header { display: grid; grid-template-columns: 230px 100px 210px minmax(0, 1fr); align-items: center; min-height: 34px; gap: 12px; padding: 0 24px; color: var(--muted); font-size: 10px; }
+.event-record header strong { color: #a5b7c4; font-weight: 600; }
+.event-record.is-tool_call header strong { color: var(--call); }
+.event-record.is-tool_result header strong { color: var(--result); }
+.event-record header span { color: #9bb1c1; }
+.event-record header code { overflow: hidden; color: #536f82; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.event-record pre { margin: 0; padding: 2px 24px 15px; overflow-x: auto; color: #9fb3c2; font-size: 10px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.event-record.is-tool_call pre { border-left: 2px solid #245574; }
+.event-record.is-tool_result pre { border-left: 2px solid #205d48; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (max-width: 760px) {
+  .monitor-controls { align-items: stretch; flex-wrap: wrap; }
+  .monitor-controls select { min-width: 0; width: calc(100vw - 48px); }
+  .event-count { margin-left: 0; }
+  .event-record header { grid-template-columns: 1fr 100px; }
+  .event-record header span, .event-record header code { display: none; }
+}
