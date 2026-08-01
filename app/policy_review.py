@@ -203,6 +203,8 @@ def _target(question: str, fallback: str) -> tuple[str, list[dict[str, str]]]:
     else:
         labels.append("성인")
         assumptions.append({"field": "연령", "value": "성인", "reason": "대화형 합성 패널의 기본 안전 범위"})
+    if "1인 가구" in question or "1인가구" in question:
+        labels.append("1인 가구")
     if "남성" in question:
         labels.append("남성")
     elif "여성" in question:
@@ -216,6 +218,14 @@ def _target(question: str, fallback: str) -> tuple[str, list[dict[str, str]]]:
             }
         )
     return " · ".join(labels) if labels else fallback, assumptions
+
+
+AUDIENCE_TERMS = ("페르소나", "알고 싶", "이해하", "누구인지", "특성을 파악")
+
+
+def _request_type(question: str) -> str:
+    """대상 이해(패널만) vs 기획안 검토(패널+모의 인터뷰). 기본값은 검토."""
+    return "audience_understanding" if _contains_any(question, AUDIENCE_TERMS) else "plan_review"
 
 
 def _is_unsafe(question: str) -> str | None:
@@ -281,6 +291,7 @@ def build_policy_plan(question: str, fallback_target: str) -> dict[str, Any]:
     return {
         "id": plan_id,
         "status": "SAFETY_BLOCKED" if blocked_reason else "COMPLETED_WITH_ASSUMPTIONS" if assumptions else "PLANNED",
+        "request_type": _request_type(question),
         "policy_domain": theme["id"],
         "policy_focus": theme["label"],
         "target_population": target,

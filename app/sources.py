@@ -19,7 +19,7 @@ from .contracts import Source, new_id
 from .errors import DomainError
 
 MAX_BYTES = 5_000_000
-USER_AGENT = "PersonaRestorer/0.2 Korean public research collector (+local demo)"
+USER_AGENT = "E2PAgent/0.2 Korean public research collector (+local demo)"
 
 # This is a source-ranking aid, not an assertion that every page is methodologically sound.
 KOREAN_OFFICIAL_HOSTS = {

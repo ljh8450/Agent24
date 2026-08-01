@@ -46,6 +46,7 @@ STREAM_TOOL_TEXT = {
     "source.fetch_snapshot": "찾은 원문을 내려받고 해시가 있는 증거 스냅샷으로 고정하고 있습니다.",
     "llm.extract_constraint_candidates": "원문의 모집단과 수치를 PGM 제약 후보로 대조하고 있습니다.",
     "review.approve_constraints": "모집단·시점·범주가 정확히 맞는 근거만 통계 제약으로 통과시키고 있습니다.",
+    "review.auto_approve_exact_constraints": "모집단이 정확히 일치하는 제약만 코드 규칙으로 자동 승인하고 있습니다. 사람 검토가 아닙니다.",
     "statistics.identification_bounds": "승인된 근거의 식별구간과 결합분포를 계산하고 있습니다.",
     "personas.sample_joint_distribution": "결합분포에서 완전 합성 페르소나 패널을 구성하고 있습니다.",
     "llm.narrate_personas": "식별된 속성 범위 안에서 페르소나 설명을 생성하고 있습니다.",

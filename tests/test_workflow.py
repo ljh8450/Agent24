@@ -87,8 +87,8 @@ class WorkflowTests(unittest.TestCase):
         evaluated = self.agent.evaluate_holdout(self.run["id"], {"actual_distribution": actual})
         self.assertAlmostEqual(evaluated["result"]["holdout"]["evaluation"]["tv_distance"], 0.0)
         report = self.agent.report(self.run["id"])
-        self.assertIn("가정 없는 식별구간", report["markdown"])
-        self.assertIn("봉인 홀드아웃 채점", report["markdown"])
+        self.assertIn("가정 없는 식별구간", report["html"])
+        self.assertIn("봉인 홀드아웃 채점", report["html"])
         self.assertTrue((Path(self.temp.name) / report["artifact"]).is_file())
 
     def test_unknown_population_constraint_requires_explicit_override(self):

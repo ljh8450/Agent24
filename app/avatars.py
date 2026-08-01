@@ -57,7 +57,7 @@ def notionists_svg(root: Path, seed: str) -> bytes:
 
     request = urllib.request.Request(
         f"https://api.dicebear.com/{NOTIONISTS_API_VERSION}/notionists/svg?seed={seed}",
-        headers={"Accept": "image/svg+xml", "User-Agent": "PersonaRestorer/0.1"},
+        headers={"Accept": "image/svg+xml", "User-Agent": "E2PAgent/0.1"},
     )
     try:
         with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - fixed trusted host

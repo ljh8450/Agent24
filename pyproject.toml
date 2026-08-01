@@ -1,7 +1,8 @@
 [project]
-name = "persona-restorer"
+name = "e2p-agent"
 version = "0.1.0"
-description = "Provenance-aware synthetic policy research chatbot"
+description = "E2P Agent (Evidence-to-Persona): provenance-aware weighted persona panels and policy pre-validation from public statistics"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = ["great-tables>=0.19", "numpy>=2.0", "pandas>=2.2", "pypdf>=5.9", "scipy>=1.14", "uvicorn>=0.30"]
 
@@ -9,7 +10,7 @@ dependencies = ["great-tables>=0.19", "numpy>=2.0", "pandas>=2.2", "pypdf>=5.9",
 include = ["app*"]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.14"]
+dev = ["pytest>=8.0", "ruff>=0.14"]
 
 [tool.ruff]
 target-version = "py312"

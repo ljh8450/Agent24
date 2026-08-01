@@ -294,17 +294,27 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertEqual(report["run"]["status"], "completed")
         status, headers, markdown_report = asyncio.run(request("GET", report["report_url"]))
         self.assertEqual(status, 200)
+<<<<<<< HEAD
         self.assertEqual(headers["content-type"], "text/markdown; charset=utf-8")
         self.assertIn(b"#", markdown_report)
         status, markdown_headers, markdown = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/report.md"))
         self.assertEqual(status, 200)
         self.assertEqual(markdown_headers["content-type"], "text/markdown; charset=utf-8")
         self.assertIn(b"#", markdown)
+=======
+        self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
+        self.assertIn(b'class="gt_table"', html)
+        self.assertIn("정책 사전검증 브리프".encode(), html)
+>>>>>>> 65d458aacfa0c1440f278e1af0c5ea2026f5366e
         status, json_headers, manifest = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/run.json"))
         self.assertEqual(status, 200)
         self.assertEqual(json_headers["content-type"], "application/json; charset=utf-8")
         self.assertEqual(json.loads(manifest)["id"], run_id)
+<<<<<<< HEAD
         self.assertEqual(set(report["downloads"]), {"panel", "interviews"})
+=======
+        self.assertEqual(set(report["downloads"]), {"panel", "interviews", "evidence"})
+>>>>>>> 65d458aacfa0c1440f278e1af0c5ea2026f5366e
         for url in report["downloads"].values():
             status, _, artifact = asyncio.run(request("GET", url))
             self.assertEqual(status, 200)
@@ -359,7 +369,11 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertIn("report.write_provenance", tools)
         self.assertEqual(
             set(completed["artifacts"]),
+<<<<<<< HEAD
             {"report", "panel", "interviews"},
+=======
+            {"html_report", "panel", "interviews", "evidence"},
+>>>>>>> 65d458aacfa0c1440f278e1af0c5ea2026f5366e
         )
         for url in completed["artifacts"].values():
             artifact_status, _, artifact = asyncio.run(request("GET", url))

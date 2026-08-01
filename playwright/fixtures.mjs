@@ -13,7 +13,6 @@ export function completedReview() {
     },
     artifacts: {
       html_report: "/api/runs/run_ui_fixture/artifacts/report.html",
-      policy_brief: "/api/runs/run_ui_fixture/artifacts/policy_brief.md",
       panel: "/api/runs/run_ui_fixture/artifacts/panel.jsonl",
       interviews: "/api/runs/run_ui_fixture/artifacts/interviews.jsonl",
       evidence: "/api/runs/run_ui_fixture/artifacts/evidence.json",
