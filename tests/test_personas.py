@@ -83,6 +83,18 @@ class CallJsonModelTests(unittest.TestCase):
         slept.assert_not_called()
 
 
+class NarrativeSchemaSafetyTests(unittest.TestCase):
+    def test_nonhuman_sampled_attribute_is_rejected_before_model_call(self):
+        personas_input = [
+            {
+                "id": "persona_001",
+                "attributes": [{"variable": "identity", "value": "티라노사우르스"}],
+            }
+        ]
+        with self.assertRaisesRegex(DomainError, "현실의 성인 인간"):
+            personas.generate_narratives(personas_input, seed=1)
+
+
 def _valid_interviews():
     return {
         "interviews": [

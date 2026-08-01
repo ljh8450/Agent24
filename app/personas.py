@@ -13,6 +13,7 @@ import numpy as np
 
 from .avatars import notionists_avatar
 from .errors import DomainError
+from .policy_review import has_unrealistic_persona_schema
 
 
 def sample_personas(
@@ -40,6 +41,20 @@ def sample_personas(
 
 def generate_narratives(personas: list[dict[str, Any]], seed: int) -> list[dict[str, Any]]:
     """Create optional, visibly non-evidentiary persona prose from sampled attributes."""
+    schema = [
+        {
+            "id": attribute.get("variable"),
+            "label": attribute.get("variable"),
+            "categories": [attribute.get("value")],
+        }
+        for persona in personas
+        for attribute in persona.get("attributes", [])
+    ]
+    if has_unrealistic_persona_schema(schema):
+        raise DomainError(
+            "INVALID_PERSONA_SCHEMA",
+            "가상 페르소나 서술에는 현실의 성인 인간 대상 통계 속성만 사용할 수 있습니다.",
+        )
     if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1":
         return [
             {
@@ -50,8 +65,9 @@ def generate_narratives(personas: list[dict[str, Any]], seed: int) -> list[dict[
             for item in personas
         ]
     prompt = (
-        "Write one short Korean first-person profile for each fully fictional adult persona. "
+        "Write one short Korean first-person profile for each fully fictional adult human persona. "
         "Use only the supplied sampled attributes, do not add life history, medical facts, or factual claims, and return JSON {narratives:[{persona_id,text,tag:'narrative'}]}. "
+        "Do not portray a persona as a non-human creature, supernatural being, object, or as having an impossible age. "
         "Every sentence is non-evidentiary narrative, not a real person quote.\n"
         f"Personas: {json.dumps(personas, ensure_ascii=False)}"
     )
