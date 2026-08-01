@@ -19,6 +19,7 @@ const toolLabels = {
   "data_go_kr.openapi": ["공공데이터포털 다운로드", "공개 API 응답을 로컬 증거로 저장했습니다."],
   "llm.extract_constraint_candidates": ["제약 후보 추출", "원문 수치와 범주 매핑의 후보를 제안했습니다."],
   "review.approve_constraints": ["통계 제약 승인", "승인된 근거만 PGM으로 전달했습니다."],
+  "review.auto_approve_exact_constraints": ["제약 자동 승인(규칙)", "모집단이 정확히 일치하는 제약만 코드 규칙으로 자동 승인했습니다."],
   "statistics.identification_bounds": ["PGM · 식별구간 계산", "feasibility, IPF, LP bounds를 계산했습니다."],
   "personas.sample_joint_distribution": ["합성 페르소나 표집", "결합분포에서만 완전 합성 속성을 표집했습니다."],
   "policy.weighted_panel_interviews": ["가중 패널 모의 인터뷰", "정책 대안을 같은 합성 패널에서 비교했습니다."],

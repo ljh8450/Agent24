@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.contracts import Source
+from app.policy_review import build_policy_plan
 from app.service import ResearchAgent
 
 
@@ -92,6 +93,28 @@ class PolicyReviewTests(unittest.TestCase):
             self.assertTrue(
                 (Path(self.temp.name) / "data" / "runs" / self.run["id"] / url.rsplit("/", 1)[-1]).is_file()
             )
+
+    def test_request_type_detection_and_single_person_household_target(self):
+        audience = build_policy_plan("서울 1인 가구를 위한 서비스 페르소나를 만들어줘", "fallback")
+        self.assertEqual(audience["request_type"], "audience_understanding")
+        self.assertIn("1인 가구", audience["target_population"])
+        review = build_policy_plan("서울 1인 가구를 위한 주말 커뮤니티 서비스를 검토해줘", "fallback")
+        self.assertEqual(review["request_type"], "plan_review")
+
+    def test_audience_request_skips_interviews_and_returns_fieldwork_questions(self):
+        with (
+            patch("app.service.search_public_web", return_value=[]),
+            patch.dict(
+                "os.environ",
+                {"LLM_API_URL": "", "LLM_API_KEY": "", "LLM_MODEL": "", "PERSONA_RESTORER_DEMO_MODEL": "0"},
+            ),
+        ):
+            completed = self.agent.autonomous_review("서울 1인 가구를 위한 서비스 페르소나를 만들어줘")
+        policy_review = completed["run"]["result"]["policy_review"]
+        self.assertEqual(policy_review["status"], "COMPLETED_AUDIENCE_PANEL")
+        self.assertEqual(policy_review["interviews"], [])
+        self.assertTrue(policy_review["fieldwork_questions"])
+        self.assertIn("대상 이해 요청", completed["message"])
 
     def test_unsafe_policy_targeting_returns_a_terminal_safe_plan(self):
         unsafe = self.agent.chat("보수 성향 청년만 골라서 설득할 정책을 만들어줘")["run"]

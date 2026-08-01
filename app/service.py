@@ -176,6 +176,18 @@ class ResearchAgent:
                     self.store.append_event(run_id, "tool.failed", {"tool": "llm.narrate_personas", "code": error.code})
 
         self.store.append_event(run_id, "tool.started", {"tool": "policy.weighted_panel_interviews"})
+        if plan.get("request_type") == "audience_understanding":
+            self._policy_review_without_llm(
+                run_id,
+                review_status="COMPLETED_AUDIENCE_PANEL",
+                warning="대상 이해 요청으로 판정되어 모의 인터뷰 없이 가중 패널·근거·현장조사 질문만 생성했습니다.",
+            )
+            self.store.append_event(
+                run_id,
+                "tool.completed",
+                {"tool": "policy.weighted_panel_interviews", "outcome": "audience_panel_only"},
+            )
+            return self._finalize_autonomous_review(run_id, research)
         try:
             self.policy_panel_review(run_id)
             panel_outcome = "simulated_interviews"
@@ -201,17 +213,23 @@ class ResearchAgent:
             "tool.completed",
             {"tool": "policy.weighted_panel_interviews", "outcome": panel_outcome},
         )
+        return self._finalize_autonomous_review(run_id, research)
 
+    def _finalize_autonomous_review(self, run_id: str, research: dict[str, Any]) -> dict[str, Any]:
         self.store.append_event(run_id, "tool.started", {"tool": "report.write_provenance"})
         report = self.report(run_id)
         self.store.append_event(run_id, "tool.completed", {"tool": "report.write_provenance"})
         final_run = self.store.get_run(run_id)
         final_result = final_run.get("result") or {}
-        message = (
-            "정책 검토를 끝까지 완료했습니다. 검증된 정량 제약이 없어 PGM은 모집단 추정이 아닌 균등 시나리오로 표시했고, 권리·법률 검토와 필요한 실제 조사 계획을 보고서에 남겼습니다."
-            if final_result.get("status") == "scenario_only"
-            else "공개 근거 스냅샷과 승인 가능한 정량 제약으로 PGM·합성 패널·정책 보고서까지 완료했습니다."
-        )
+        scenario_only = final_result.get("status") == "scenario_only"
+        if (final_result.get("policy_review") or {}).get("status") == "COMPLETED_AUDIENCE_PANEL":
+            message = "대상 이해 요청으로 가중 페르소나 패널과 근거·현장조사 질문을 생성했습니다." + (
+                " 검증된 정량 제약이 없어 가중치는 균등 시나리오이며 모집단 추정이 아닙니다." if scenario_only else ""
+            )
+        elif scenario_only:
+            message = "정책 검토를 끝까지 완료했습니다. 검증된 정량 제약이 없어 PGM은 모집단 추정이 아닌 균등 시나리오로 표시했고, 권리·법률 검토와 필요한 실제 조사 계획을 보고서에 남겼습니다."
+        else:
+            message = "공개 근거 스냅샷과 승인 가능한 정량 제약으로 PGM·합성 패널·정책 보고서까지 완료했습니다."
         return {
             "run": final_run,
             "message": message,
@@ -303,7 +321,8 @@ class ResearchAgent:
         )
 
     def _autonomous_evidence_gate(self, run_id: str) -> list[str]:
-        self.store.append_event(run_id, "tool.started", {"tool": "review.approve_constraints"})
+        # 자율 실행에서는 사람이 없으므로 exact 모집단 일치 제약만 코드가 자동 승인한다. 사람 검토가 아니다.
+        self.store.append_event(run_id, "tool.started", {"tool": "review.auto_approve_exact_constraints"})
         run = self.store.get_run(run_id)
         trusted_sources = {
             item["id"] for item in run["sources"] if item.get("trust_tier") in {"korean_official", "korean_research"}
@@ -320,7 +339,11 @@ class ResearchAgent:
         self.store.append_event(
             run_id,
             "tool.completed",
-            {"tool": "review.approve_constraints", "approved": len(selected), "gate": "exact_population_only"},
+            {
+                "tool": "review.auto_approve_exact_constraints",
+                "approved": len(selected),
+                "gate": "exact_population_only",
+            },
         )
         return selected
 
@@ -344,20 +367,23 @@ class ResearchAgent:
         self._persist_manifest(run_id)
         return self.store.get_run(run_id)
 
-    def _policy_review_without_llm(self, run_id: str, warning: str | None = None) -> dict[str, Any]:
+    def _policy_review_without_llm(
+        self, run_id: str, warning: str | None = None, review_status: str = "COMPLETED_WITHOUT_LLM_INTERVIEWS"
+    ) -> dict[str, Any]:
         run = self.store.get_run(run_id)
         plan = self._latest_policy_plan(run)
         result = run["result"] or {}
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
         panel = weighted_segments(result["states"], result["distribution"], evidence_level=evidence_level)
         review = {
-            "status": "COMPLETED_WITHOUT_LLM_INTERVIEWS",
+            "status": review_status,
             "plan_id": plan["id"],
             "alternatives": plan["alternatives"],
             "panel": panel,
             "panel_coverage": sum(item["weight"] for item in panel),
             "interviews": [],
             "responses": {},
+            "fieldwork_questions": plan.get("interview_questions", []),
             "brief": policy_brief(plan, panel, []),
             "warning": warning
             or "LLM이 설정되지 않아 모의 인터뷰와 반응률을 만들지 않았습니다. 프로필은 통계 또는 시나리오 상태를 보여주는 완전 합성 카드입니다.",
@@ -377,6 +403,8 @@ class ResearchAgent:
                 break
         if "대학생" in question or "대학" in question:
             parts.append("대학 재학생")
+        if "1인 가구" in question or "1인가구" in question:
+            parts.append("1인 가구")
         return ", ".join(parts) if parts else "사용자 질의에서 추출할 대상 집단 — 검토 필요"
 
     def set_variables(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -675,6 +703,7 @@ class ResearchAgent:
             "panel_coverage": sum(item["weight"] for item in panel),
             "interviews": interviews,
             "responses": summarize_panel_interviews(panel, interviews),
+            "fieldwork_questions": plan.get("interview_questions", []),
             "brief": policy_brief(plan, panel, interviews),
             "warning": "인터뷰는 PGM으로 가중된 완전 합성 패널에 대한 모델 모의 응답입니다. 실제 시민 응답·찬성률·행동·인과효과가 아닙니다.",
         }
@@ -843,77 +872,3 @@ class ResearchAgent:
         stable = json.dumps(run, ensure_ascii=False, sort_keys=True)
         self.store.write_artifact(run_id, "run.json", stable)
         self.store.append_event(run_id, "artifact.persisted", {"sha256": hashlib.sha256(stable.encode()).hexdigest()})
-
-    @staticmethod
-    def _render_report(run: dict[str, Any]) -> str:
-        result = run["result"] or {}
-        lines = [
-            "# 페르소나 복원기 연구 보고서",
-            "",
-            "## 질문과 대상",
-            f"- 질문: {run['question']}",
-            f"- 대상 힌트: {run['target_population']}",
-            "",
-            "## 증거와 승인 제약",
-            *[
-                f"- `{item['id']}` {item['where']} {item['relation']} {item['value']} — {item['review_status']} / source `{item['source_id']}`"
-                for item in run["constraints"]
-            ],
-            "",
-            "## 제약 상태",
-            f"- 상태: {result.get('status')}",
-        ]
-        if result.get("status") == "infeasible":
-            lines += [
-                f"- 충돌 core: {', '.join(result.get('conflict_core', []))}",
-                "- 결론: 제약이 양립하지 않아 점추정·페르소나 생성을 수행하지 않았습니다.",
-            ]
-        else:
-            identification = result.get("identification", {})
-            lines += [
-                "",
-                "## 수치 결과",
-                f"- 최대엔트로피 점추정: {result.get('maximum_entropy', {}).get('point_estimate')}",
-                f"- 가정 없는 식별구간: {identification.get('lower')} – {identification.get('upper')}",
-                f"- 선택된 표집 모델: {result.get('selected_model')}",
-                f"- 가정: {result.get('assumption')}",
-            ]
-            if result.get("structure_sensitivity"):
-                lines += [
-                    "",
-                    "## 구조 민감도",
-                    *[
-                        f"- `{item['id']}`: {item['status']}; 점추정={item.get('point_estimate')}; residual={item.get('residual')}"
-                        for item in result["structure_sensitivity"]
-                    ],
-                ]
-        if result.get("survey"):
-            survey = result["survey"]
-            lines += [
-                "",
-                "## 합성 설문",
-                f"- 응답 수: {survey['n']}; 방식: {survey['mode']}",
-                f"- 집계: {survey['counts']}",
-                f"- 경고: {survey['warning']}",
-            ]
-        if result.get("holdout", {}).get("evaluation"):
-            evaluation = result["holdout"]["evaluation"]
-            lines += [
-                "",
-                "## 봉인 홀드아웃 채점",
-                f"- 예측 hash: `{result['holdout']['prediction_hash']}`",
-                f"- Total variation distance: {evaluation['tv_distance']}",
-                f"- 실제 관심량: {evaluation['actual_estimand']}",
-                f"- 식별구간 coverage: {evaluation['interval_covered']}",
-            ]
-        lines += [
-            "",
-            "## 한계",
-            "- 이것은 공개된 통계 제약과 명시적 구조 가정에서 만든 합성 분석이며 실제 여론조사나 인과추론이 아닙니다.",
-            "- 웹 원문, 범주 매핑, 모집단 정합화는 승인 이력과 run artifact에서 재검토해야 합니다.",
-            "",
-            "## 재현 정보",
-            f"- run id: `{run['id']}`",
-            f"- 마지막 상태: `{run['status']}`",
-        ]
-        return "\n".join(lines) + "\n"
