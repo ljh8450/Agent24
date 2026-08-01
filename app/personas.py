@@ -95,7 +95,7 @@ def _call_json_model(prompt: str) -> dict[str, Any]:
         {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
+            # temperature 미지정: gpt-5 계열은 기본값(1) 외 temperature를 거부한다.
             "response_format": {"type": "json_object"},
         }
     ).encode()
