@@ -152,3 +152,24 @@ Source of Truth: false
 영향: 이미지 기준의 업무형 header가 적용되고, 현재 페이지가 `aria-current="page"`로 식별된다. API·실행 흐름·P0 산출물은 변경하지 않았다.
 검증: 기존 unittest 회귀 테스트와 git diff --check를 실행한다.
 ```
+
+## DEC-014 Light theme visual alignment
+
+```text
+시간: 2026-08-02
+요청: 현재 서비스는 기능과 UI 구성을 유지한 채, 다크 테마를 화이트 테마로 바꾸고 레이아웃 밀도만 조정한다.
+판정: static/index.html의 브라우저 테마 힌트를 light로 전환하고 static/style.css에 화이트 캔버스·표면·경계·텍스트·블루 행동 강조 토큰을 적용했다. 기존 사이드바, 입력 컴포저, 우측 inspector와 모든 data-testid/API 흐름은 보존했다.
+상위 문서와의 차이: 기존 frontend-design-spec.md의 다크 테마 기준은 사용자의 최신 명시 요청으로 대체해 화이트 테마 기준으로 동기화했다. 문제정의·안전 경계·P0 범위·외부 서비스·README·Raw Stream은 변경하지 않았다.
+검증: CSS 구문·기존 프론트엔드 Playwright 회귀와 좁은 화면 레이아웃을 실행해 확인한다. 표현 전용 변경이므로 단위 테스트는 추가하지 않는다.
+미해결: 브라우저 렌더링 결과는 실제 저장된 사용자 데이터의 긴 텍스트 조합까지 수동 확인이 필요하다.
+```
+
+## DEC-015 Submission lock terminal-state recovery
+
+```text
+시간: 2026-08-02
+요청: AI 응답이 실행 중일 때는 버튼과 Enter 제출을 모두 막고, 응답 완료 후에는 다시 활성화한다.
+판정: 실행 상태를 단일 setSubmissionLocked 함수로 통합해 제출 버튼·입력창·aria-busy와 Enter 제출을 같은 상태로 제어했다. chat.completed와 review.completed 수신 시점에도 즉시 잠금을 해제해, 스트림 연결 종료만 기다리던 기존 해제 경로를 보완했다. 오류와 finally에서도 해제된다.
+상위 문서와의 차이: API·안전 경계·P0 범위·외부 서비스·README·Raw Stream은 변경하지 않았다.
+검증: 완료된 검토 후 입력창과 제출 버튼이 모두 활성화되는 Playwright 회귀 단언을 추가하고, 기존 테스트를 실행한다.
+```

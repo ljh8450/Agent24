@@ -9,6 +9,8 @@ test("one policy sentence completes the agent workflow without manual controls",
   await expect(page.locator(".policy-plan")).toContainText("권리·법률 선행 검토");
   await expect(page.getByText("NOT_FOUND", { exact: false })).toHaveCount(0);
   await expect(page.getByTestId("manual-lab")).toHaveCount(0);
+  await expect(page.getByTestId("question-input")).toBeEnabled();
+  await expect(page.getByTestId("start-research")).toBeEnabled();
   await page.screenshot({ path: "playwright-results/autonomous-policy-review.png", fullPage: true });
 });
 
