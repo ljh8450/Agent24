@@ -101,8 +101,34 @@ function searchSection() { return ensureSection("search-results", "source-result
 function reviewSection() { return ensureSection("policy-review", "policy-review", "policy-review"); }
 function archiveRunSections() { for (const id of ["search-results", "policy-review", "artifact-openers-block"]) { const node = document.getElementById(id); if (node) { node.removeAttribute("id"); delete node.dataset.testid; } } }
 async function api(path, method = "GET", payload) { const response = await fetch(path, { method, headers: { "content-type": "application/json" }, body: payload === undefined ? undefined : JSON.stringify(payload) }); const result = await response.json(); if (!response.ok) throw new Error(`${result.error?.code || "ERROR"}: ${result.error?.message || "요청 실패"}`); return result; }
-function beginStreamingMessage(archive = null) { const node = document.createElement("section"); node.className = "chat-message is-agent is-streaming"; node.dataset.testid = "streaming-response"; const body = document.createElement("div"); body.className = "chat-message-body"; const paragraph = document.createElement("p"); body.append(paragraph); node.append(body); $("stream-tail").append(node); return { node, paragraph, text: "", archive }; }
-function mdLite(text) { return escapeHtml(text).replace(/^#{2,6}[ \t]*(.+)$/gm, "<strong>$1</strong>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/^[ \t]*[-*][ \t]+/gm, "\u2022 ").replace(/\n/g, "<br>"); }
+function beginStreamingMessage(archive = null) { const node = document.createElement("section"); node.className = "chat-message is-agent is-streaming"; node.dataset.testid = "streaming-response"; const body = document.createElement("div"); body.className = "chat-message-body"; const paragraph = document.createElement("div"); paragraph.className = "stream-body"; body.append(paragraph); node.append(body); $("stream-tail").append(node); return { node, paragraph, text: "", archive }; }
+function mdInline(text) { return escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"); }
+function mdLite(text) {
+  const lines = String(text || "").split("\n");
+  const html = [];
+  let tableRows = [];
+  const flushTable = () => {
+    if (!tableRows.length) return;
+    const rows = tableRows
+      .map((line) => line.replace(/^\|/, "").replace(/\|\s*$/, "").split("|").map((cell) => cell.trim()))
+      .filter((cells) => !cells.every((cell) => /^:?-{2,}:?$/.test(cell) || cell === ""));
+    if (rows.length) html.push('<table class="stream-table">' + rows.map((cells, index) => "<tr>" + cells.map((cell) => `<${index === 0 ? "th" : "td"}>${mdInline(cell)}</${index === 0 ? "th" : "td"}>`).join("") + "</tr>").join("") + "</table>");
+    tableRows = [];
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("|")) { tableRows.push(trimmed); continue; }
+    flushTable();
+    if (!trimmed) continue;
+    const heading = trimmed.match(/^#{2,6}[ \t]*(.+)$/);
+    if (heading) { html.push(`<strong class="stream-heading">${mdInline(heading[1])}</strong>`); continue; }
+    const bullet = trimmed.match(/^[-*][ \t]+(.+)$/);
+    if (bullet) { html.push(`<span class="stream-line">\u2022 ${mdInline(bullet[1])}</span>`); continue; }
+    html.push(`<span class="stream-line">${mdInline(trimmed)}</span>`);
+  }
+  flushTable();
+  return html.join("");
+}
 function appendStreamingText(stream, delta) { stream.text += String(delta || ""); stream.paragraph.innerHTML = mdLite(stream.text); $("chat-scroll").scrollTop = $("chat-scroll").scrollHeight; }
 function finishStreamingMessage(stream) { stream.node.classList.remove("is-streaming"); if (!stream.archive) return; if (stream.text.trim()) stream.archive.append(stream.node); else stream.node.remove(); const artifactBlock = document.getElementById("artifact-openers-block"); if (artifactBlock && stream.archive === $("conversation")) $("conversation").append(artifactBlock); }
 function toolStatus(status) { return status === "failed" ? ["!", "실패"] : status === "completed" ? ["✓", "완료"] : ["◌", "실행 중"]; }

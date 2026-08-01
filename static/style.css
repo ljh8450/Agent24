@@ -317,3 +317,9 @@ aside.study-inspector { display:none !important; }
 .chat-attachment { margin-top:6px; padding:8px 12px; border:1px solid var(--border-light); border-radius:10px; background:#161616; font-size:12px; }
 .chat-attachment strong { display:block; margin-bottom:4px; }
 .chat-attachment blockquote { margin:4px 0 0; padding-left:10px; border-left:2px solid var(--border-light); color:var(--text-tertiary); white-space:pre-wrap; }
+
+.stream-body .stream-line { display:block; margin:2px 0; }
+.stream-body .stream-heading { display:block; margin:10px 0 4px; }
+.stream-table { width:100%; border-collapse:collapse; margin:6px 0; font-size:12px; }
+.stream-table th, .stream-table td { border:1px solid var(--border-light); padding:4px 8px; text-align:left; vertical-align:top; }
+.stream-table th { color:var(--text-tertiary); background:#161616; }
