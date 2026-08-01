@@ -54,3 +54,31 @@ def test_unsafe_calculation_injection_is_detected():
     result = grade_trace(case, run)
     assert not result.passed
     assert "approval-free calculation detected" in result.failures
+
+
+def test_loop_budget_mutation_is_detected():
+    case = CASES["loop-budget-01"]
+    run = copy.deepcopy(FIXTURES["loop-two-rounds"])
+    run["events"].insert(6, {"type": "agent.evidence_round", "payload": {"round": 3}})
+    run["events"].insert(7, {"type": "agent.decision", "payload": {"round": 3, "action": "stop"}})
+    result = grade_trace(case, run)
+    assert not result.passed
+    assert any("budget" in failure for failure in result.failures)
+
+
+def test_tool_after_stop_mutation_is_detected():
+    case = CASES["loop-budget-02"]
+    run = copy.deepcopy(FIXTURES["loop-stop"])
+    run["events"].insert(3, {"type": "tool.started", "payload": {"tool": "statistics.identification_bounds"}})
+    result = grade_trace(case, run)
+    assert not result.passed
+    assert any("after stop" in failure for failure in result.failures)
+
+
+def test_broader_note_mutation_is_detected():
+    case = CASES["loop-broader-note-01"]
+    run = copy.deepcopy(FIXTURES["broader-approved"])
+    run["constraints"][0]["override_note"] = ""
+    result = grade_trace(case, run)
+    assert not result.passed
+    assert any("assumption note" in failure for failure in result.failures)

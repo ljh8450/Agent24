@@ -106,3 +106,15 @@ Source of Truth: false
 상위 문서와의 차이: app 서비스 동작·P0·안전 경계·Raw Stream 원본은 변경하지 않았다. 테스트는 실제 외부 API 없이 저장·재생·채점 계약을 검증한다.
 미해결: 실제 autonomous_review 전체 실행에서 생성되는 run.json을 CI fixture로 사용하는 end-to-end 시나리오는 후속 작업이다.
 ```
+
+## DEC-010 Loop contract evaluation after remote integration
+
+```text
+시간: 2026-08-01
+요청: #17/#18 루프 도입 후 결정 라운드 예산, stop 이후 도구 호출 차단, broader 승인 가정 note를 evals에 반영한다.
+원격 반영: origin/agent/decision-event-visibility의 evidence recovery loop 변경을 merge 상태로 통합했다. README와 기존 evals/CI/lock은 보존했다.
+판정: `agent.decision` 라운드 ≤2, stop 이후 `tool.started` 0건, 승인된 broader constraint의 `override_note` 필수 검사를 grader에 추가했다. 각 위반을 검출하는 mutation 테스트도 추가했다.
+근거: 원격 loop 테스트 포함 pytest 41개 통과, regression 24/24, holdout 6/6, ruff 통과.
+상위 문서와의 차이: loop 구현은 원격 이슈 범위에 따른 provisional 통합이며, evals/ 파일 소유권은 현재 이슈에 유지했다. 문제 정의·안전 경계·P0 범위는 변경하지 않았다.
+미해결: merge는 아직 커밋 전이며, 실제 GitHub Actions hosted 실행 결과는 확인하지 않았다.
+```

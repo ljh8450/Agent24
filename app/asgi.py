@@ -45,13 +45,50 @@ STREAM_TOOL_TEXT = {
     "web.parallel_korean_policy_research": "한국 공공기관과 연구기관의 신뢰 출처를 병렬로 탐색하고 있습니다.",
     "source.fetch_snapshot": "찾은 원문을 내려받고 해시가 있는 증거 스냅샷으로 고정하고 있습니다.",
     "llm.extract_constraint_candidates": "원문의 모집단과 수치를 PGM 제약 후보로 대조하고 있습니다.",
-    "review.approve_constraints": "모집단·시점·범주가 정확히 맞는 근거만 통계 제약으로 통과시키고 있습니다.",
+    "kosis.statistics_openapi": "KOSIS OpenAPI에서 공표 비율 통계표를 내려받고 있습니다.",
+    "review.auto_approve_exact_constraints": "모집단이 정확히 일치하는 제약만 코드 규칙으로 자동 승인하고 있습니다. 사람 검토가 아닙니다.",
+    "agent.evidence_round": "현재 근거 상태를 관찰하고 추가 수집 라운드를 시작했습니다.",
+    "agent.decision": "관찰한 근거 상태를 바탕으로 다음 수집 행동을 결정했습니다.",
     "statistics.identification_bounds": "승인된 근거의 식별구간과 결합분포를 계산하고 있습니다.",
     "personas.sample_joint_distribution": "결합분포에서 완전 합성 페르소나 패널을 구성하고 있습니다.",
     "llm.narrate_personas": "식별된 속성 범위 안에서 페르소나 설명을 생성하고 있습니다.",
     "policy.weighted_panel_interviews": "권리·법률 쟁점과 정책 대안을 같은 패널에서 검토하고 있습니다.",
     "report.write_provenance": "근거, 계산, 패널, 한계를 재현 가능한 보고서로 묶고 있습니다.",
 }
+
+
+def _stream_event_update(item: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(item.get("type", ""))
+    payload = item.get("payload") or {}
+    if event_type.startswith("tool."):
+        tool = str(payload.get("tool", ""))
+        return {
+            "tool": tool,
+            "status": event_type.removeprefix("tool."),
+            "text": STREAM_TOOL_TEXT.get(tool, "실행 메타데이터를 처리하고 있습니다."),
+            "code": payload.get("code"),
+        }
+    if event_type not in {"agent.evidence_round", "agent.decision"}:
+        return None
+
+    reason = str(payload.get("reason") or "")
+    queries = [str(query) for query in (payload.get("queries") or []) if str(query).strip()]
+    event_identity = item.get("created_at") or f"{payload.get('round', '')}:{payload.get('action', '')}:{'|'.join(queries)}"
+    text = reason or STREAM_TOOL_TEXT[event_type]
+    if event_type == "agent.decision":
+        text = f"증거 판단 {payload.get('round')}라운드: {payload.get('action')} — {text}"
+    elif payload.get("round") is not None:
+        text = f"증거 수집 {payload.get('round')}라운드: {text}"
+    return {
+        "tool": event_type,
+        "event_id": f"{event_type}:{event_identity}",
+        "status": "completed",
+        "text": text,
+        "round": payload.get("round"),
+        "action": payload.get("action"),
+        "reason": reason or None,
+        "queries": queries,
+    }
 
 
 def _json(status: int, value: Any) -> tuple[int, bytes, str]:
@@ -196,35 +233,34 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
 
     task = asyncio.create_task(asyncio.to_thread(agent.continue_autonomous_review, run_id, created["message"]))
     insight_started = False
+
+    async def relay(events: list[dict[str, Any]]) -> None:
+        nonlocal insight_started
+        for item in events:
+            kind = item.get("type", "")
+            payload = item.get("payload", {})
+            if kind == "insight.delta":
+                if not insight_started:
+                    insight_started = True
+                    await _send_sse(send, "message.stream.start", {"phase": "insight"})
+                await _send_sse(send, "message.delta", {"delta": str(payload.get("delta", ""))})
+                continue
+            update = _stream_event_update(item)
+            if not update:
+                continue
+            await _send_sse(send, "tool.update", update)
+            if kind == "tool.completed" or kind == "agent.decision":
+                caption = str(update.get("text", ""))
+                if caption:
+                    await _send_sse(send, "message.stream.start", {"phase": "tool"})
+                    await _send_text_delta(send, caption)
+
     try:
         while not task.done():
             current = await asyncio.to_thread(agent.store.get_run, run_id)
             events = current.get("events", [])
             new_events = events[seen_events:]
-            for item in new_events:
-                if item.get("type") == "insight.delta":
-                    if not insight_started:
-                        insight_started = True
-                        await _send_sse(send, "message.stream.start", {"phase": "insight"})
-                    await _send_sse(send, "message.delta", {"delta": str(item.get("payload", {}).get("delta", ""))})
-                    continue
-                if item.get("type", "").startswith("tool."):
-                    tool = str(item.get("payload", {}).get("tool", ""))
-                    await _send_sse(
-                        send,
-                        "tool.update",
-                        {
-                            "tool": tool,
-                            "status": item["type"].removeprefix("tool."),
-                            "text": STREAM_TOOL_TEXT.get(tool, "실행 메타데이터를 처리하고 있습니다."),
-                            "code": item.get("payload", {}).get("code"),
-                        },
-                    )
-                    if item["type"] == "tool.completed":
-                        caption = STREAM_TOOL_TEXT.get(tool)
-                        if caption:
-                            await _send_sse(send, "message.stream.start", {"phase": "tool"})
-                            await _send_text_delta(send, caption)
+            await relay(new_events)
             if new_events:
                 seen_events = len(events)
                 await _send_sse(send, "run.updated", {"run": current})
@@ -232,31 +268,7 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
 
         completed = await task
         final_run = completed["run"]
-        remaining = final_run.get("events", [])[seen_events:]
-        for item in remaining:
-            if item.get("type") == "insight.delta":
-                if not insight_started:
-                    insight_started = True
-                    await _send_sse(send, "message.stream.start", {"phase": "insight"})
-                await _send_sse(send, "message.delta", {"delta": str(item.get("payload", {}).get("delta", ""))})
-                continue
-            if item.get("type", "").startswith("tool."):
-                tool = str(item.get("payload", {}).get("tool", ""))
-                await _send_sse(
-                    send,
-                    "tool.update",
-                    {
-                        "tool": tool,
-                        "status": item["type"].removeprefix("tool."),
-                        "text": STREAM_TOOL_TEXT.get(tool, "실행 메타데이터를 처리하고 있습니다."),
-                        "code": item.get("payload", {}).get("code"),
-                    },
-                )
-                if item["type"] == "tool.completed":
-                    caption = STREAM_TOOL_TEXT.get(tool)
-                    if caption:
-                        await _send_sse(send, "message.stream.start", {"phase": "tool"})
-                        await _send_text_delta(send, caption)
+        await relay(final_run.get("events", [])[seen_events:])
         await _send_sse(send, "run.updated", {"run": final_run})
         await _send_sse(send, "research.completed", completed.get("research", {}))
         await _send_sse(send, "message.stream.start", {"phase": "final"})
@@ -311,8 +323,6 @@ def _api_authorized(scope: dict[str, Any]) -> bool:
 async def _dispatch(method: str, path: str, receive: Any) -> tuple[int, bytes, str]:
     if method == "GET" and path == "/api/health":
         return _json(200, {"status": "ok", "root": str(ROOT)})
-    if method == "GET" and path == "/api/source-catalog":
-        return _json(200, await asyncio.to_thread(agent.source_catalog))
     if method == "GET" and path == "/api/runs":
         return _json(200, {"runs": await asyncio.to_thread(agent.store.list_runs, 8)})
     if method == "DELETE" and path.startswith("/api/runs/") and path.count("/") == 3:
@@ -371,58 +381,10 @@ async def _dispatch(method: str, path: str, receive: Any) -> tuple[int, bytes, s
         )
         return 200, content, media_type
     body = await _payload(receive) if method == "POST" else {}
-    if method == "POST" and action == "policy/plan":
-        return _json(200, await _run_action(run_id, "policy.plan_request", agent.policy_plan))
-    if method == "POST" and action == "policy/research":
-        return _json(
-            200, await _run_action(run_id, "web.parallel_korean_policy_research", agent.research_policy_sources)
-        )
-    if method == "POST" and action == "policy/panel-review":
-        return _json(200, await _run_action(run_id, "policy.weighted_panel_interviews", agent.policy_panel_review))
-    if method == "POST" and action == "schema":
-        return _json(200, await _run_action(run_id, "schema.define_variables", agent.set_variables, body))
-    if method == "POST" and action == "sources/search":
-        return _json(
-            200,
-            await _run_action(
-                run_id,
-                "web.search_korean_sources",
-                agent.search_sources,
-                str(body.get("query", "")),
-                bool(body.get("trusted_korean_only", True)),
-            ),
-        )
-    if method == "POST" and action == "sources/fetch":
-        return _json(201, await _run_action(run_id, "source.fetch_snapshot", agent.fetch_source, body))
     if method == "POST" and action == "sources/kosis":
         return _json(201, await _run_action(run_id, "kosis.statistics_openapi", agent.fetch_kosis, body))
     if method == "POST" and action == "sources/data-go":
         return _json(201, await _run_action(run_id, "data_go_kr.openapi", agent.fetch_data_go, body))
-    if method == "POST" and action.startswith("sources/") and action.endswith("/extract"):
-        source_id = action.removeprefix("sources/").removesuffix("/extract")
-        return _json(
-            200, await _run_action(run_id, "llm.extract_constraint_candidates", agent.extract_candidates, source_id)
-        )
-    if method == "POST" and action == "constraints":
-        return _json(201, await _run_action(run_id, "evidence.propose_constraint", agent.add_constraint, body))
-    if method == "POST" and action == "constraints/approve":
-        return _json(200, await _run_action(run_id, "review.approve_constraints", agent.approve_constraints, body))
-    if method == "POST" and action == "compute":
-        return _json(200, await _run_action(run_id, "statistics.identification_bounds", agent.compute, body))
-    if method == "POST" and action == "personas":
-        return _json(200, await _run_action(run_id, "personas.sample_joint_distribution", agent.create_personas, body))
-    if method == "POST" and action == "survey":
-        return _json(200, await _run_action(run_id, "personas.synthetic_survey", agent.survey, body))
-    if method == "POST" and action == "narratives":
-        return _json(200, await _run_action(run_id, "llm.narrate_personas", agent.narratives))
-    if method == "POST" and action == "persona-chat":
-        return _json(200, await _run_action(run_id, "personas.answer_sampled_attribute", agent.persona_chat, body))
-    if method == "POST" and action == "holdout/seal":
-        return _json(200, await _run_action(run_id, "evaluation.seal_holdout", agent.seal_holdout))
-    if method == "POST" and action == "holdout/evaluate":
-        return _json(200, await _run_action(run_id, "evaluation.score_holdout", agent.evaluate_holdout, body))
-    if method == "POST" and action == "report":
-        return _json(200, await _run_action(run_id, "report.write_provenance", agent.report))
     raise DomainError("NOT_FOUND", "API 경로를 찾을 수 없습니다.", status=404)
 
 

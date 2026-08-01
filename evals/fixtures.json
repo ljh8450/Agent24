@@ -67,5 +67,46 @@
       {"type": "completion.partial", "payload": {"reason": "공개 통계를 확인하지 못했습니다."}}
     ],
     "result": {"outcome": "PARTIAL", "reason": "공개 통계를 확인하지 못했습니다.", "next_action": "다음 검색 후보를 검토하세요."}
+  },
+  "loop-two-rounds": {
+    "id": "fixture-loop-two-rounds",
+    "status": "completed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "agent.evidence_round", "payload": {"round": 1}},
+      {"type": "agent.decision", "payload": {"round": 1, "action": "search", "queries": ["대체 검색어"], "reason": "근거 공백"}},
+      {"type": "tool.started", "payload": {"tool": "web.parallel_korean_policy_research"}},
+      {"type": "tool.completed", "payload": {"tool": "web.parallel_korean_policy_research"}},
+      {"type": "agent.evidence_round", "payload": {"round": 2}},
+      {"type": "agent.decision", "payload": {"round": 2, "action": "stop", "queries": [], "reason": "추가 근거 없음"}},
+      {"type": "completion.partial", "payload": {"reason": "근거가 부족합니다."}}
+    ],
+    "result": {"outcome": "PARTIAL", "reason": "근거가 부족합니다.", "next_action": "실제 조사로 확인하세요."}
+  },
+  "loop-stop": {
+    "id": "fixture-loop-stop",
+    "status": "completed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "agent.evidence_round", "payload": {"round": 1}},
+      {"type": "agent.decision", "payload": {"round": 1, "action": "stop", "queries": [], "reason": "안전한 종료"}},
+      {"type": "completion.partial", "payload": {"reason": "안전하게 중단했습니다."}}
+    ],
+    "result": {"outcome": "PARTIAL", "reason": "안전하게 중단했습니다.", "next_action": "실제 주민에게 확인하세요."}
+  },
+  "broader-approved": {
+    "id": "fixture-broader-approved",
+    "status": "completed",
+    "constraints": [
+      {"id": "c-broader", "population_compatibility": "broader", "review_status": "approved", "override_note": "전국 통계를 대상 집단의 근사로 사용한다는 가정"}
+    ],
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "agent.evidence_round", "payload": {"round": 1}},
+      {"type": "agent.decision", "payload": {"round": 1, "action": "approve_broader", "queries": [], "reason": "근사 사용"}},
+      {"type": "constraints.approved", "payload": {"constraint_ids": ["c-broader"]}},
+      {"type": "run.completed", "payload": {}}
+    ],
+    "result": {"outcome": "SUCCESS"}
   }
 }

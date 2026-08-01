@@ -227,3 +227,9 @@ uv run python evals/run_evals.py --cases evals/cases.jsonl
 - [x] `grade_trace.py --run-dir`로 실제 run artifact 디렉터리 직접 채점 지원
 - [x] 평가 결과에 category별 통과율 추가
 - [ ] `autonomous_review` 전체 실행에서 생성된 run.json을 외부 서비스 없이 재생하는 end-to-end fixture 추가
+- [x] 원격 evidence recovery loop 구현을 현재 브랜치에 통합 검토
+- [x] 결정 라운드 최대 2회 평가
+- [x] `agent.decision(action=stop)` 이후 추가 `tool.started` 0건 평가
+- [x] broader 승인 constraint의 `override_note` 필수 평가
+- [x] loop budget/stop/broader note mutation 테스트 추가
+- [ ] 원격 loop merge 커밋 및 GitHub Actions hosted 결과 확인

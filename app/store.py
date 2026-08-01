@@ -215,16 +215,7 @@ class ProjectStore:
         return str(destination.relative_to(self.root))
 
     def read_artifact(self, run_id: str, filename: str) -> bytes:
-        # 신규 산출물 4종 + 이전 버전 run이 남긴 레거시 산출물(기존 링크 호환).
-        if filename not in {
-            "report.html",
-            "run.json",
-            "panel.jsonl",
-            "evidence.json",
-            "report.md",
-            "policy_brief.md",
-            "interviews.jsonl",
-        }:
+        if filename not in {"report.html", "run.json", "panel.jsonl", "interviews.jsonl", "evidence.json"}:
             raise DomainError("ARTIFACT_NOT_FOUND", "허용되지 않은 artifact입니다.", status=404)
         destination = (self.run_dir / run_id / filename).resolve()
         run_root = (self.run_dir / run_id).resolve()

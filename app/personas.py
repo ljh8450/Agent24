@@ -5,7 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
@@ -114,12 +114,18 @@ def _call_json_model(prompt: str, model: str | None = None) -> dict[str, Any]:
             with urllib.request.urlopen(request, timeout=120) as response:
                 body = json.loads(response.read().decode())
             return json.loads(body["choices"][0]["message"]["content"])
+        except urllib.error.HTTPError as error:
+            last_error = error
+            if error.code != 429 and error.code < 500:
+                break  # 인증·요청 오류는 재시도해도 같다 — 즉시 실패
         except (KeyError, OSError, TimeoutError, ValueError, urllib.error.URLError) as error:
             last_error = error
-            if attempt == 0:
-                time.sleep(1.5)
+        if attempt == 0:
+            time.sleep(1.5)
     raise DomainError(
-        "LLM_JSON_FAILED", "모델의 JSON 응답을 검증하지 못했습니다.", details={"reason": type(last_error).__name__}
+        "LLM_JSON_FAILED",
+        "모델의 JSON 응답을 검증하지 못했습니다.",
+        details={"reason": type(last_error).__name__, "status": getattr(last_error, "code", None)},
     ) from last_error
 
 
@@ -366,6 +372,75 @@ def narrate_panel_segments(panel: list[dict[str, Any]], focus: str | None) -> di
     return profiles
 
 
+VALID_EVIDENCE_ACTIONS = {"kosis", "search", "approve_broader", "stop"}
+
+
+def _fallback_evidence_action(observation: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic decision so the evidence loop always proceeds without a model."""
+    if int(observation.get("broader_candidates", 0)) > 0:
+        return {
+            "action": "approve_broader",
+            "queries": [],
+            "reason": "결정론 폴백: broader 모집단 후보가 있어 가정을 명시하고 승인합니다.",
+        }
+    if observation.get("kosis_available") and not observation.get("tried_kosis_queries"):
+        return {"action": "kosis", "queries": [], "reason": "결정론 폴백: 미시도 상태인 KOSIS OpenAPI를 먼저 조회합니다."}
+    if int(observation.get("round", 1)) <= 1:
+        return {"action": "search", "queries": [], "reason": "결정론 폴백: 1라운드에서는 웹 재탐색을 시도합니다."}
+    return {"action": "stop", "queries": [], "reason": "결정론 폴백: 남은 예산 안에서 유효한 대안이 없어 중단합니다."}
+
+
+def decide_next_evidence_action(observation: dict[str, Any]) -> dict[str, Any]:
+    """Pick the next evidence-gathering action from the loop's observation.
+
+    Returns {"action": "kosis"|"search"|"approve_broader"|"stop", "queries": [...], "reason": str}.
+    Falls back to a deterministic rule when the model is unconfigured or keeps
+    breaking the contract, so the calling loop can always continue.
+    """
+    tried = {
+        str(query)
+        for key in ("tried_kosis_queries", "tried_web_queries")
+        for query in observation.get(key) or []
+    }
+
+    def normalize(raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict) or raw.get("action") not in VALID_EVIDENCE_ACTIONS:
+            return None
+        queries = [str(query).strip() for query in raw.get("queries") or [] if str(query).strip()]
+        queries = [query for query in queries if query not in tried][:3]
+        reason = str(raw.get("reason") or "").strip()
+        if not reason:
+            return None
+        return {"action": raw["action"], "queries": queries, "reason": reason}
+
+    base_prompt = (
+        "You are the evidence-gathering planner of a Korean policy-statistics agent. "
+        "Observe the current state and choose exactly one next action. Return JSON "
+        '{"action": "kosis"|"search"|"approve_broader"|"stop", "queries": [...], "reason": "..."}.\n'
+        "Rules: 'kosis' queries KOSIS OpenAPI with 1-3 short Korean topic keywords (only when kosis_available). "
+        "'search' re-searches the Korean public web with 1-3 NEW queries naming concrete statistics or institutions. "
+        "'approve_broader' proposes approving national-proxy (broader) candidates with an explicit assumption — only when broader_candidates > 0. "
+        "'stop' declares the evidence gap honestly. Never repeat a query listed in tried_kosis_queries or tried_web_queries. "
+        "reason: one short Korean sentence.\n"
+        f"Observation: {json.dumps(observation, ensure_ascii=False)}"
+    )
+    try:
+        decision = normalize(_call_json_model(base_prompt))
+        if decision is None:
+            decision = normalize(
+                _call_json_model(
+                    base_prompt
+                    + "\nPrevious attempt broke the JSON contract (unknown action, repeated queries only, or empty reason). Follow it exactly."
+                )
+            )
+        if decision is not None:
+            return decision
+    except DomainError as error:
+        if error.code not in {"LLM_NOT_CONFIGURED", "LLM_JSON_FAILED"}:
+            raise
+    return _fallback_evidence_action(observation)
+
+
 def extract_constraint_candidates(
     source: dict[str, Any], variables: list[dict[str, Any]], excerpt: str
 ) -> list[dict[str, Any]]:
@@ -483,7 +558,6 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
     """
     alternatives = list(plan.get("alternatives", []))
     questions = list(plan.get("interview_questions", []))
-    expected = {(segment["id"], policy["id"]) for segment in panel for policy in alternatives}
     if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1":
         response_labels = ("support", "conditional", "low_change", "decline")
         interviews: list[dict[str, Any]] = []
@@ -521,7 +595,7 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
     segment_ids = {segment["id"] for segment in panel}
     valid_responses = {"support", "conditional", "low_change", "decline"}
 
-    def interview_alternative(policy: dict[str, Any]) -> list[dict[str, Any]]:
+    def interview_alternative(policy: dict[str, Any], feedback: str = "") -> list[dict[str, Any]]:
         prompt = (
             "You are generating fictional policy-testing interview answers for a weighted synthetic panel. "
             "These are not real people and may not be portrayed as representative opinions. "
@@ -530,6 +604,7 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
             "response (support|conditional|low_change|decline), reason, barrier, suggested_change. "
             "Write reason, barrier and suggested_change in Korean, one short sentence each, grounded only in that segment's sampled attributes; "
             "when an answer lacks a directly sampled attribute, say it is a hypothetical simulation.\n"
+            f"{feedback}"
             f"Policy under test: {json.dumps({'focus': plan.get('policy_focus'), 'label': policy.get('label'), 'description': policy.get('description'), 'hypothesis': policy.get('hypothesis')}, ensure_ascii=False)}\n"
             f"Interview questions: {json.dumps(questions, ensure_ascii=False)}\n"
             f"Weighted synthetic panel: {json.dumps(compact_panel, ensure_ascii=False)}"
@@ -566,9 +641,31 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
             for item in raw
         ]
 
+    def interview_with_repair(policy: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            return interview_alternative(policy)
+        except DomainError as error:
+            if error.code != "INVALID_POLICY_INTERVIEW_OUTPUT":
+                raise
+            return interview_alternative(
+                policy,
+                "Previous attempt broke the JSON contract (wrong segment ids, missing segments, or invalid fields). "
+                "Redo it and return exactly one item per panel segment with all required fields.\n",
+            )
+
+    # 정책안 단위 실패 격리: 한 정책안의 호출이 끝내 실패해도 나머지 인터뷰는 보존한다.
+    interviews: list[dict[str, Any]] = []
+    errors: list[DomainError] = []
     with ThreadPoolExecutor(max_workers=len(alternatives)) as pool:
-        grouped = list(pool.map(interview_alternative, alternatives))
-    interviews = [item for group in grouped for item in group]
-    if {(item["segment_id"], item["policy_id"]) for item in interviews} != expected:
-        raise DomainError("INVALID_POLICY_INTERVIEW_OUTPUT", "정책 인터뷰 모델이 안전한 JSON 계약을 지키지 않았습니다.")
+        futures = {pool.submit(interview_with_repair, policy): policy for policy in alternatives}
+        for future in as_completed(futures):
+            try:
+                interviews.extend(future.result())
+            except DomainError as error:
+                if error.code == "LLM_NOT_CONFIGURED":
+                    raise
+                errors.append(error)
+    if not interviews and errors:
+        raise errors[0]
+    interviews.sort(key=lambda item: (item["segment_id"], item["policy_id"]))
     return interviews

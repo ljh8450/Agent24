@@ -11,17 +11,16 @@ from typing import Any
 from .contracts import Constraint, Variable, new_id, now, parse_variables, validate_where
 from .errors import DomainError
 from .personas import (
-    answer_persona_question,
     classify_chat_intent,
     converse_with_memory,
     converse_with_memory_stream,
+    decide_next_evidence_action,
     extract_constraint_candidates,
     generate_narratives,
     llm_policy_plan,
     narrate_panel_segments,
     sample_personas,
     simulate_policy_interviews,
-    simulate_survey,
     synthesize_policy_insights,
 )
 from .policy_review import (
@@ -35,7 +34,6 @@ from .sources import (
     fetch_data_go_api,
     fetch_kosis_statistics,
     fetch_source,
-    korean_source_catalog,
     search_kosis_tables,
     search_public_web,
     source_excerpt,
@@ -303,6 +301,8 @@ class ResearchAgent:
         llm_ready = all(os.getenv(name) for name in ("LLM_API_URL", "LLM_API_KEY", "LLM_MODEL"))
         self._autonomous_constraint_extraction(run_id, stored_sources, llm_ready)
         approved_ids = self._autonomous_evidence_gate(run_id)
+        if not approved_ids and llm_ready:
+            approved_ids = self._evidence_recovery_loop(run_id, plan)
 
         self.store.append_event(run_id, "tool.started", {"tool": "statistics.identification_bounds"})
         if approved_ids:
@@ -347,6 +347,18 @@ class ResearchAgent:
                     self.store.append_event(run_id, "tool.failed", {"tool": "llm.narrate_personas", "code": error.code})
 
         self.store.append_event(run_id, "tool.started", {"tool": "policy.weighted_panel_interviews"})
+        if plan.get("request_type") == "audience_understanding":
+            self._policy_review_without_llm(
+                run_id,
+                review_status="COMPLETED_AUDIENCE_PANEL",
+                warning="대상 이해 요청으로 판정되어 모의 인터뷰 없이 합성 패널·근거·현장조사 질문만 생성했습니다.",
+            )
+            self.store.append_event(
+                run_id,
+                "tool.completed",
+                {"tool": "policy.weighted_panel_interviews", "outcome": "audience_panel_only"},
+            )
+            return self._finalize_autonomous_review(run_id, research)
         try:
             self.policy_panel_review(run_id)
             panel_outcome = "simulated_interviews"
@@ -387,17 +399,25 @@ class ResearchAgent:
             "tool.completed",
             {"tool": "policy.weighted_panel_interviews", "outcome": panel_outcome},
         )
+        return self._finalize_autonomous_review(run_id, research)
 
+    def _finalize_autonomous_review(self, run_id: str, research: dict[str, Any]) -> dict[str, Any]:
         self.store.append_event(run_id, "tool.started", {"tool": "report.write_provenance"})
         report = self.report(run_id)
         self.store.append_event(run_id, "tool.completed", {"tool": "report.write_provenance"})
         final_run = self.store.get_run(run_id)
         final_result = final_run.get("result") or {}
-        message = (
-            "정책 검토를 끝까지 완료했습니다. 검증된 정량 제약이 없어 PGM은 모집단 추정이 아닌 균등 시나리오로 표시했고, 권리·법률 검토와 필요한 실제 조사 계획을 보고서에 남겼습니다."
-            if final_result.get("status") == "scenario_only"
-            else "공개 근거 스냅샷과 승인 가능한 정량 제약으로 PGM·합성 패널·정책 보고서까지 완료했습니다."
-        )
+        scenario_only = final_result.get("status") == "scenario_only"
+        if (final_result.get("policy_review") or {}).get("status") == "COMPLETED_AUDIENCE_PANEL":
+            message = "대상 이해 요청으로 합성 페르소나 패널과 근거·현장조사 질문을 생성했습니다." + (
+                " 검증된 정량 제약이 없어 가중치는 균등 시나리오이며 모집단 추정이 아닙니다."
+                if scenario_only
+                else ""
+            )
+        elif scenario_only:
+            message = "정책 검토를 끝까지 완료했습니다. 검증된 정량 제약이 없어 PGM은 모집단 추정이 아닌 균등 시나리오로 표시했고, 권리·법률 검토와 필요한 실제 조사 계획을 보고서에 남겼습니다."
+        else:
+            message = "공개 근거 스냅샷과 승인 가능한 정량 제약으로 PGM·합성 패널·정책 보고서까지 완료했습니다."
         return {
             "run": final_run,
             "message": message,
@@ -405,7 +425,73 @@ class ResearchAgent:
             "artifacts": {"html_report": report["report_url"], **report["downloads"]},
         }
 
-    def _autonomous_kosis_evidence(self, run_id: str, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    def _evidence_recovery_loop(self, run_id: str, plan: dict[str, Any]) -> list[str]:
+        """Observe the empty evidence gate and let the decision tool pick the next action.
+
+        Hard budgets live in code: at most two extra rounds, three new queries per
+        round, and no query is ever repeated. The model only chooses WHAT to look at.
+        """
+        tried_web = [str(query) for query in plan.get("evidence_queries") or []]
+        tried_kosis = [str(term) for term in plan.get("kosis_search_terms") or []]
+        approved: list[str] = []
+        for round_number in (1, 2):
+            constraints = self.store.list_constraints(run_id)
+            observation = {
+                "round": round_number,
+                "rounds_left": 2 - round_number,
+                "approved_count": 0,
+                "candidate_count": len(constraints),
+                "broader_candidates": sum(
+                    1
+                    for item in constraints
+                    if item.get("population_compatibility") == "broader"
+                    and item.get("review_status") == "candidate"
+                    and str(item.get("raw_statement", "")).strip()
+                ),
+                "tried_kosis_queries": tried_kosis,
+                "tried_web_queries": tried_web,
+                "kosis_available": bool(os.getenv("KOSIS_API_KEY")),
+                "policy_focus": plan.get("policy_focus"),
+                "target_population": plan.get("target_population"),
+            }
+            self.store.append_event(run_id, "agent.evidence_round", {"round": round_number, "observation": observation})
+            decision = decide_next_evidence_action(observation)
+            self.store.append_event(run_id, "agent.decision", {"round": round_number, **decision})
+            action = decision["action"]
+            if action == "stop":
+                break
+            if action == "approve_broader":
+                approved = self._autonomous_evidence_gate(run_id, allow_broader=True)
+                if approved:
+                    break
+                continue
+            fresh = [query for query in decision["queries"] if query not in tried_web and query not in tried_kosis][:3]
+            if action == "kosis":
+                if not observation["kosis_available"]:
+                    continue
+                tried_kosis += fresh
+                new_sources = self._autonomous_kosis_evidence(run_id, plan, queries_override=fresh or None)
+            else:  # search
+                if not fresh:
+                    break
+                tried_web += fresh
+                candidates: list[dict[str, Any]] = []
+                for query in fresh:
+                    try:
+                        candidates.extend(search_public_web(query, True))
+                    except DomainError:
+                        continue
+                new_sources, _ = self._autonomous_source_snapshots(run_id, candidates)
+            if new_sources:
+                self._autonomous_constraint_extraction(run_id, new_sources, True)
+            approved = self._autonomous_evidence_gate(run_id)
+            if approved:
+                break
+        return approved
+
+    def _autonomous_kosis_evidence(
+        self, run_id: str, plan: dict[str, Any], queries_override: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Pull real published proportions straight from KOSIS OpenAPI for the plan variables."""
         if not os.getenv("KOSIS_API_KEY"):
             return []
@@ -415,7 +501,7 @@ class ResearchAgent:
             "수원", "수원시", "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기",
             "전국", "정책", "검토", "도입", "확대", "프로그램", "여부", "구간", "형태",
         }
-        queries = [str(term).strip() for term in plan.get("kosis_search_terms") or [] if str(term).strip()][:4]
+        queries = [str(term).strip() for term in queries_override or plan.get("kosis_search_terms") or [] if str(term).strip()][:4]
         if not queries:
             tokens = [
                 token
@@ -581,8 +667,9 @@ class ResearchAgent:
             {"tool": "llm.extract_constraint_candidates", "accepted_candidates": accepted},
         )
 
-    def _autonomous_evidence_gate(self, run_id: str) -> list[str]:
-        self.store.append_event(run_id, "tool.started", {"tool": "review.approve_constraints"})
+    def _autonomous_evidence_gate(self, run_id: str, allow_broader: bool = False) -> list[str]:
+        allowed_compat = {"exact", "broader"} if allow_broader else {"exact"}
+        self.store.append_event(run_id, "tool.started", {"tool": "review.auto_approve_exact_constraints"})
         run = self.store.get_run(run_id)
         trusted_sources = {
             item["id"] for item in run["sources"] if item.get("trust_tier") in {"korean_official", "korean_research"}
@@ -591,7 +678,7 @@ class ResearchAgent:
             item
             for item in run["constraints"]
             if item.get("source_id") in trusted_sources
-            and item.get("population_compatibility") in {"exact", "broader"}
+            and item.get("population_compatibility") in allowed_compat
             and str(item.get("raw_statement", "")).strip()
         ]
 
@@ -600,30 +687,39 @@ class ResearchAgent:
             return int(match.group(1)) if match else 0
 
         # 서로 다른 범주·교차표의 eq 제약은 모순이 아니므로 모두 승인 대상이다.
-        # 완전히 같은 셀(where 일치)의 중복(연도 중복·재추출)만 걸러내며, exact 우선·최신 연도 우선으로 대표를 고른다.
-        # 광의(broader) 모집단 대리값은 자동 가정 노트를 남겨 승인하고, 보고서·UI에 대리값임을 표기한다.
+        # 완전히 같은 셀(where 일치)의 중복만 걸러내고, exact를 broader보다 우선하며 최신 연도를 고른다.
         selected_by_cell: dict[tuple, dict[str, Any]] = {}
         for item in sorted(
-            eligible,
-            key=lambda entry: (entry.get("population_compatibility") != "exact", -latest_period(entry)),
+            eligible, key=lambda entry: (entry.get("population_compatibility") != "exact", -latest_period(entry))
         ):
             where = item.get("where") or {}
             if not where:
                 continue
             cell = tuple(sorted((str(key), str(value)) for key, value in where.items()))
             selected_by_cell.setdefault(cell, item)
-        selected = [item["id"] for item in selected_by_cell.values()]
-        override_notes = {
-            item["id"]: "전국·광의 모집단 통계를 대상 집단의 대리값으로 자동 가정했습니다. 대상 모집단의 실측치가 아닙니다."
-            for item in selected_by_cell.values()
-            if item.get("population_compatibility") != "exact"
-        }
+        chosen = list(selected_by_cell.values())
+        selected = [item["id"] for item in chosen]
         if selected:
-            self.approve_constraints(run_id, {"constraint_ids": selected, "override_notes": override_notes})
+            broader_note = "전국(광의) 모집단 통계를 대상 집단의 근사로 사용한다는 명시적 가정 아래 자동 승인됨"
+            self.approve_constraints(
+                run_id,
+                {
+                    "constraint_ids": selected,
+                    "override_notes": {
+                        item["id"]: broader_note
+                        for item in chosen
+                        if item.get("population_compatibility") == "broader"
+                    },
+                },
+            )
         self.store.append_event(
             run_id,
             "tool.completed",
-            {"tool": "review.approve_constraints", "approved": len(selected), "gate": "cell_dedup_exact_first"},
+            {
+                "tool": "review.auto_approve_exact_constraints",
+                "approved": len(selected),
+                "gate": "exact_plus_broader_assumption" if allow_broader else "exact_population_only",
+            },
         )
         return selected
 
@@ -647,20 +743,23 @@ class ResearchAgent:
         self._persist_manifest(run_id)
         return self.store.get_run(run_id)
 
-    def _policy_review_without_llm(self, run_id: str, warning: str | None = None) -> dict[str, Any]:
+    def _policy_review_without_llm(
+        self, run_id: str, warning: str | None = None, review_status: str = "COMPLETED_WITHOUT_LLM_INTERVIEWS"
+    ) -> dict[str, Any]:
         run = self.store.get_run(run_id)
         plan = self._latest_policy_plan(run)
         result = run["result"] or {}
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
         panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
         review = {
-            "status": "COMPLETED_WITHOUT_LLM_INTERVIEWS",
+            "status": review_status,
             "plan_id": plan["id"],
             "alternatives": plan["alternatives"],
             "panel": panel,
             "panel_coverage": sum(item["weight"] for item in panel),
             "interviews": [],
             "responses": {},
+            "fieldwork_questions": plan.get("interview_questions", []),
             "brief": policy_brief(plan, panel, []),
             "warning": warning
             or "LLM이 설정되지 않아 모의 인터뷰와 반응률을 만들지 않았습니다. 프로필은 통계 또는 시나리오 상태를 보여주는 완전 합성 카드입니다.",
@@ -680,6 +779,8 @@ class ResearchAgent:
                 break
         if "대학생" in question or "대학" in question:
             parts.append("대학 재학생")
+        if "1인 가구" in question or "1인가구" in question:
+            parts.append("1인 가구")
         return ", ".join(parts) if parts else "사용자 질의에서 추출할 대상 집단 — 검토 필요"
 
     def set_variables(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -695,13 +796,6 @@ class ResearchAgent:
         )
         self.store.append_event(run_id, "schema.accepted", {"variable_ids": [item.id for item in variables]})
         return self.store.get_run(run_id)
-
-    def source_catalog(self) -> dict[str, Any]:
-        return {
-            "sources": korean_source_catalog(),
-            "data_go_services": ["welfare_list", "nps_subscription"],
-            "warning": "등급은 기관·도메인 기반 시작점입니다. 통계표의 조사설계·모집단·시점·범주를 반드시 검토하세요.",
-        }
 
     @staticmethod
     def _latest_policy_plan(run: dict[str, Any]) -> dict[str, Any]:
@@ -763,29 +857,6 @@ class ResearchAgent:
             "failed_queries": failures,
             "warning": "후보는 신뢰 도메인 우선 검색 결과일 뿐입니다. 원문 스냅샷·모집단·시점·분모를 검토하고 승인한 제약만 PGM에 사용합니다.",
         }
-
-    def search_sources(self, run_id: str, query: str, trusted_korean_only: bool = True) -> dict[str, Any]:
-        self.store.get_run(run_id)
-        results = search_public_web(query, trusted_korean_only)
-        self.store.append_event(
-            run_id,
-            "source.search_completed",
-            {"query": query, "count": len(results), "trusted_korean_only": trusted_korean_only},
-        )
-        return {
-            "results": results,
-            "trusted_korean_only": trusted_korean_only,
-            "warning": "검색 결과는 미검증 외부 증거입니다. 원문을 스냅샷으로 저장한 뒤 사람이 조사설계·모집단·범주 매핑을 검토해야 합니다.",
-        }
-
-    def fetch_source(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self.store.get_run(run_id)
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, dict):
-            raise DomainError("INVALID_SOURCE_METADATA", "출처 메타데이터는 JSON 객체여야 합니다.")
-        source = fetch_source(self.root, str(payload.get("url", "")), metadata)
-        self.store.add_source(run_id, source.as_dict())
-        return source.as_dict()
 
     def fetch_kosis(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self.store.get_run(run_id)
@@ -929,22 +1000,6 @@ class ResearchAgent:
         self._persist_manifest(run_id)
         return self.store.get_run(run_id)
 
-    def survey(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        result = run["result"] or {}
-        items = result.get("personas", {}).get("items", [])
-        if not items:
-            raise DomainError("PERSONAS_REQUIRED", "합성 설문 전에는 페르소나를 생성해야 합니다.")
-        policy_question = " ".join(str(payload.get("policy_question", "")).split())
-        if len(policy_question) < 4:
-            raise DomainError("POLICY_QUESTION_REQUIRED", "조사할 정책 문항을 입력하세요.")
-        survey = simulate_survey(items, policy_question, int(result["personas"]["seed"]))
-        result["survey"] = survey
-        self.store.update_run(run_id, result=result)
-        self.store.append_event(run_id, "survey.completed", {"n": survey["n"], "mode": survey["mode"]})
-        self._persist_manifest(run_id)
-        return self.store.get_run(run_id)
-
     def narratives(self, run_id: str) -> dict[str, Any]:
         run = self.store.get_run(run_id)
         result = run["result"] or {}
@@ -1078,6 +1133,7 @@ class ResearchAgent:
             "panel_coverage": sum(item["weight"] for item in panel),
             "interviews": interviews,
             "responses": summarize_panel_interviews(panel, interviews),
+            "fieldwork_questions": plan.get("interview_questions", []),
             "omitted_cells": omitted_cells,
             "insights": insights,
             "brief": policy_brief(plan, panel, interviews, insights=insights),
@@ -1090,100 +1146,6 @@ class ResearchAgent:
             "policy.panel_interview_completed",
             {"plan_id": plan["id"], "segment_count": len(panel), "interview_count": len(interviews)},
         )
-        self._persist_manifest(run_id)
-        return self.store.get_run(run_id)
-
-    def persona_chat(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        items = (run["result"] or {}).get("personas", {}).get("items", [])
-        persona = next((item for item in items if item["id"] == payload.get("persona_id")), None)
-        if not persona:
-            raise DomainError("PERSONA_NOT_FOUND", "해당 합성 페르소나를 찾을 수 없습니다.")
-        answer = answer_persona_question(persona, str(payload.get("question", "")), payload.get("allowed_variable"))
-        self.store.append_event(
-            run_id, "persona.question_answered", {"persona_id": persona["id"], "status": answer["status"]}
-        )
-        return answer
-
-    def seal_holdout(self, run_id: str) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        result = run["result"] or {}
-        if result.get("status") != "feasible":
-            raise DomainError("FEASIBLE_MODEL_REQUIRED", "봉인 전에 feasible한 통계 모델이 필요합니다.")
-        if result.get("holdout"):
-            raise DomainError(
-                "HOLDOUT_ALREADY_SEALED", "이 run은 이미 홀드아웃을 봉인했습니다. 새 run으로 다시 시작하세요."
-            )
-        payload = {
-            "distribution": result["distribution"],
-            "estimand": result["estimand"],
-            "selected_model": result["selected_model"],
-            "maximum_entropy": result["maximum_entropy"],
-        }
-        result["holdout"] = {
-            "sealed_at": now(),
-            "prediction_hash": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
-            "prediction": payload,
-        }
-        self.store.update_run(run_id, result=result)
-        self.store.append_event(run_id, "holdout.sealed", {"prediction_hash": result["holdout"]["prediction_hash"]})
-        self._persist_manifest(run_id)
-        return self.store.get_run(run_id)
-
-    def evaluate_holdout(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        result = run["result"] or {}
-        holdout = result.get("holdout")
-        if not holdout or holdout.get("evaluation"):
-            raise DomainError(
-                "HOLDOUT_NOT_READY", "먼저 예측을 봉인해야 하며, 봉인한 홀드아웃은 한 번만 채점할 수 있습니다."
-            )
-        actual = payload.get("actual_distribution")
-        if not isinstance(actual, list) or len(actual) != len(result["distribution"]):
-            raise DomainError("INVALID_HOLDOUT", "actual_distribution의 셀 수가 추정 분포와 일치해야 합니다.")
-        try:
-            actual = [float(item) for item in actual]
-        except (TypeError, ValueError) as error:
-            raise DomainError("INVALID_HOLDOUT", "홀드아웃 분포는 숫자 배열이어야 합니다.") from error
-        if any(item < 0 for item in actual) or abs(sum(actual) - 1) > 1e-8:
-            raise DomainError("INVALID_HOLDOUT", "홀드아웃 분포는 음수가 아니고 합이 1이어야 합니다.")
-        prediction = holdout["prediction"]["distribution"]
-        tv_distance = 0.5 * sum(abs(left - right) for left, right in zip(prediction, actual, strict=True))
-        estimand = holdout["prediction"]["estimand"]
-        states = result["states"]
-        numerator = [all(state.get(key) == value for key, value in estimand["numerator"].items()) for state in states]
-        denominator_where = estimand.get("denominator")
-        denominator = (
-            [all(state.get(key) == value for key, value in denominator_where.items()) for state in states]
-            if denominator_where
-            else None
-        )
-        if denominator:
-            joined = [left and right for left, right in zip(numerator, denominator, strict=True)]
-            denominator_probability = sum(value for value, mask in zip(actual, denominator, strict=True) if mask)
-            actual_estimand = (
-                sum(value for value, mask in zip(actual, joined, strict=True) if mask) / denominator_probability
-                if denominator_probability
-                else None
-            )
-        else:
-            actual_estimand = sum(value for value, mask in zip(actual, numerator, strict=True) if mask)
-        interval = result["identification"]
-        coverage = (
-            interval.get("lower") is not None
-            and actual_estimand is not None
-            and interval["lower"] - 1e-8 <= actual_estimand <= interval["upper"] + 1e-8
-        )
-        holdout["evaluation"] = {
-            "evaluated_at": now(),
-            "tv_distance": tv_distance,
-            "actual_estimand": actual_estimand,
-            "interval_covered": coverage,
-            "actual_distribution_hash": hashlib.sha256(json.dumps(actual).encode()).hexdigest(),
-        }
-        result["holdout"] = holdout
-        self.store.update_run(run_id, result=result)
-        self.store.append_event(run_id, "holdout.evaluated", {"tv_distance": tv_distance, "interval_covered": coverage})
         self._persist_manifest(run_id)
         return self.store.get_run(run_id)
 
@@ -1253,11 +1215,19 @@ class ResearchAgent:
                     "panel.jsonl",
                     "\n".join(json.dumps(item, ensure_ascii=False) for item in panel_records) + "\n",
                 ),
+                "interviews": self.store.write_artifact(
+                    run_id,
+                    "interviews.jsonl",
+                    "\n".join(
+                        json.dumps(item, ensure_ascii=False) for item in policy_review.get("interviews", [])
+                    )
+                    + "\n",
+                ),
                 "evidence": self.store.write_artifact(
                     run_id, "evidence.json", json.dumps(evidence_payload, ensure_ascii=False, indent=2)
                 ),
             }
-        for stale in ("report.md", "policy_brief.md", "interviews.jsonl"):
+        for stale in ("report.md", "policy_brief.md"):
             (self.store.run_dir / run_id / stale).unlink(missing_ok=True)
         self.store.append_event(run_id, "report.completed", {"artifact": html_path})
         self._persist_manifest(run_id)

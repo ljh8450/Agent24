@@ -142,6 +142,45 @@ def grade_trace(case: dict[str, Any], run: dict[str, Any]) -> Grade:
         else:
             failures.append(f"intent mismatch: expected={expected_intent} actual={actual_intent}")
 
+    decisions = [event for event in events if event.get("type") == "agent.decision"]
+    max_decision_rounds = expected.get("max_decision_rounds")
+    if max_decision_rounds is not None:
+        if len(decisions) <= int(max_decision_rounds):
+            checks.append("decision_round_budget")
+        else:
+            failures.append(f"decision round budget exceeded: {len(decisions)} > {max_decision_rounds}")
+
+    if bool(expected.get("stop_requires_no_tools", False)):
+        stop_indices = [
+            index
+            for index, event in enumerate(events)
+            if event.get("type") == "agent.decision" and event.get("payload", {}).get("action") == "stop"
+        ]
+        if not stop_indices:
+            failures.append("stop decision is missing")
+        else:
+            stop_index = stop_indices[0]
+            trailing_tools = [event for event in events[stop_index + 1 :] if event.get("type") == "tool.started"]
+            if not trailing_tools:
+                checks.append("no_tools_after_stop")
+            else:
+                failures.append(f"tools called after stop decision: {len(trailing_tools)}")
+
+    if bool(expected.get("broader_requires_note", False)):
+        broader_approved = [
+            item
+            for item in run.get("constraints", [])
+            if isinstance(item, dict)
+            and item.get("population_compatibility") == "broader"
+            and item.get("review_status") == "approved"
+        ]
+        if broader_approved and all(str(item.get("override_note", "")).strip() for item in broader_approved):
+            checks.append("broader_assumption_note")
+        elif broader_approved:
+            failures.append("approved broader constraint lacks assumption note")
+        else:
+            failures.append("broader approved constraint is missing")
+
     target_fields = expected.get("target_fields", {})
     actual_target = _result_value(run, "target") or {}
     if target_fields and all(actual_target.get(key) == value for key, value in target_fields.items()):

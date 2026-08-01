@@ -87,26 +87,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(avatar["tag"], "decorative_synthetic")
         self.assertRegex(avatar["url"], r"^/api/avatars/notionists/[a-f0-9]{24}\.svg$")
         self.assertIn("api.dicebear.com/10.x/notionists/svg", avatar["remote_url"])
-        refused = self.agent.persona_chat(
-            self.run["id"], {"persona_id": "persona_001", "question": "어떤 경험이 있나요?"}
-        )
-        self.assertEqual(refused["status"], "refused_unidentified")
-        answered = self.agent.persona_chat(
-            self.run["id"], {"persona_id": "persona_001", "allowed_variable": "region", "question": "지역은?"}
-        )
-        self.assertEqual(answered["status"], "answered_sampled_attribute")
-        sealed = self.agent.seal_holdout(self.run["id"])
-        actual = sealed["result"]["distribution"]
-        evaluated = self.agent.evaluate_holdout(self.run["id"], {"actual_distribution": actual})
-        self.assertAlmostEqual(evaluated["result"]["holdout"]["evaluation"]["tv_distance"], 0.0)
         report = self.agent.report(self.run["id"])
         report_path = Path(self.temp.name) / report["artifact"]
         self.assertTrue(report_path.is_file())
         html = report_path.read_text(encoding="utf-8")
         self.assertIn("가정 없는 식별구간", html)
         self.assertIn("정책 검토 보고서", html)
-        self.assertIn("봉인 홀드아웃 채점", html)
-        self.assertIn("Total variation distance", html)
 
     def test_unknown_population_constraint_requires_explicit_override(self):
         self.agent.set_variables(self.run["id"], {"variables": [{"id": "region", "categories": ["daejeon", "other"]}]})

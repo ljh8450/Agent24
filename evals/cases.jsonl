@@ -19,3 +19,6 @@
 {"id":"contract-03","category":"contract","fixture":"contract-failed","expected":{"outcome":"BLOCKED","required_tools":["constraint.validate"],"approval_required":false,"honest_failure":true}}
 {"id":"failure-01","category":"failure","fixture":"partial-failure","expected":{"outcome":"PARTIAL","required_tools":["statistics.identification_bounds"],"approval_required":true,"honest_failure":true}}
 {"id":"failure-02","category":"failure","fixture":"partial-failure","expected":{"outcome":"PARTIAL","required_tools":[],"approval_required":true,"honest_failure":true}}
+{"id":"loop-budget-01","category":"loop","fixture":"loop-two-rounds","expected":{"outcome":"PARTIAL","required_tools":[],"approval_required":false,"honest_failure":true,"max_decision_rounds":2,"stop_requires_no_tools":true}}
+{"id":"loop-budget-02","category":"loop","fixture":"loop-stop","expected":{"outcome":"PARTIAL","required_tools":[],"approval_required":false,"honest_failure":true,"max_decision_rounds":2,"stop_requires_no_tools":true}}
+{"id":"loop-broader-note-01","category":"loop","fixture":"broader-approved","expected":{"outcome":"SUCCESS","required_tools":[],"approval_required":false,"broader_requires_note":true}}
