@@ -292,10 +292,10 @@ class GatewayEndpointTests(unittest.TestCase):
         status, _, report = self.call("POST", f"/api/runs/{run_id}/report", {})
         self.assertEqual(status, 200)
         self.assertEqual(report["run"]["status"], "completed")
-        status, headers, html = asyncio.run(request("GET", report["report_url"]))
+        status, headers, markdown_report = asyncio.run(request("GET", report["report_url"]))
         self.assertEqual(status, 200)
-        self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
-        self.assertIn(b'class="gt_table"', html)
+        self.assertEqual(headers["content-type"], "text/markdown; charset=utf-8")
+        self.assertIn(b"#", markdown_report)
         status, markdown_headers, markdown = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/report.md"))
         self.assertEqual(status, 200)
         self.assertEqual(markdown_headers["content-type"], "text/markdown; charset=utf-8")
@@ -304,7 +304,7 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json_headers["content-type"], "application/json; charset=utf-8")
         self.assertEqual(json.loads(manifest)["id"], run_id)
-        self.assertEqual(set(report["downloads"]), {"policy_brief", "panel", "interviews", "evidence"})
+        self.assertEqual(set(report["downloads"]), {"panel", "interviews"})
         for url in report["downloads"].values():
             status, _, artifact = asyncio.run(request("GET", url))
             self.assertEqual(status, 200)
@@ -359,7 +359,7 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertIn("report.write_provenance", tools)
         self.assertEqual(
             set(completed["artifacts"]),
-            {"html_report", "policy_brief", "panel", "interviews", "evidence"},
+            {"report", "panel", "interviews"},
         )
         for url in completed["artifacts"].values():
             artifact_status, _, artifact = asyncio.run(request("GET", url))
@@ -375,6 +375,22 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertEqual(headers["content-type"], "image/svg+xml; charset=utf-8")
         self.assertEqual(body, fixture)
         loader.assert_called_once_with(asgi.ROOT, seed)
+
+    def test_openapi_spec_and_swagger_ui_are_served(self):
+        status, headers, spec = self.call("GET", "/openapi.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "application/json; charset=utf-8")
+        self.assertEqual(spec["openapi"], "3.0.3")
+        self.assertIn("/api/health", spec["paths"])
+        self.assertEqual(spec["components"]["schemas"]["PersonasRequest"]["properties"]["count"]["maximum"], 3)
+        self.assertIn("ConstraintRequest", spec["paths"]["/api/runs/{run_id}/constraints"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"])
+        self.assertIn("/api/runs/{run_id}/sources/{source_id}/extract", spec["paths"])
+        self.assertIn("bearerAuth", spec["components"]["securitySchemes"])
+
+        status, headers, body = asyncio.run(request("GET", "/swagger-ui/index.html"))
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "text/html")
+        self.assertIn(b"SwaggerUIBundle", body)
 
     def test_agent_review_stream_emits_live_text_tool_updates_and_completion(self):
         with (

@@ -13,6 +13,7 @@ from urllib.parse import unquote
 
 from .avatars import notionists_svg
 from .errors import DomainError
+from .openapi import build_openapi_document
 from .service import ResearchAgent
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -231,6 +232,8 @@ async def _dispatch(method: str, path: str, receive: Any) -> tuple[int, bytes, s
         return _json(200, {"status": "ok", "root": str(ROOT)})
     if method == "GET" and path == "/api/source-catalog":
         return _json(200, await asyncio.to_thread(agent.source_catalog))
+    if method == "GET" and path == "/openapi.json":
+        return _json(200, build_openapi_document())
     if method == "POST" and path == "/api/chat":
         body = await _payload(receive)
         return _json(201, await asyncio.to_thread(agent.chat, str(body.get("text", "")), body.get("event_id")))
@@ -343,7 +346,9 @@ async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
         await send({"type": "http.response.body", "body": b""})
         return
     try:
-        if path.startswith("/api/"):
+        if method == "GET" and path == "/openapi.json":
+            status, content, media_type = _json(200, build_openapi_document())
+        elif path.startswith("/api/"):
             if not _api_authorized(scope):
                 status, content, media_type = _json(
                     401,

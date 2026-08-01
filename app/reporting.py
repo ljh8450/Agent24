@@ -242,29 +242,3 @@ def render_markdown_report(run: dict[str, Any]) -> str:
     ]
     return "\n".join(sections) + "\n"
 
-
-def render_html_report(run: dict[str, Any]) -> str:
-    tables = report_tables(run)
-    table_html = "\n".join(
-        _great_table(title, "프로젝트 로컬 provenance artifact", *tables[key])
-        for key, title in (
-            ("summary", "실행 요약"),
-            ("sources", "출처 원장"),
-            ("constraints", "검토 제약"),
-            ("estimate", "결합분포와 식별성"),
-            ("policy", "정책안과 모의 반응"),
-            ("personas", "합성 페르소나 표집"),
-            ("panel", "가중 가상 시민 패널"),
-            ("holdout", "봉인 홀드아웃 채점"),
-            ("activity", "도구 실행 이력"),
-        )
-    )
-    question = escape(_text(run.get("question")))
-    return f"""<!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>페르소나 복원기 연구 보고서</title><style>
-  :root {{ color-scheme: light; --ink:#292925; --muted:#707069; --line:#deded7; --orange:#d86645; }}
-  * {{ box-sizing:border-box; }} body {{ max-width:1080px; margin:0 auto; padding:48px 30px 80px; color:var(--ink); background:#fff; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo",sans-serif; line-height:1.55; }}
-  header {{ margin-bottom:38px; padding-bottom:24px; border-bottom:1px solid var(--line); }} .eyebrow {{ color:var(--orange); font-size:11px; font-weight:750; letter-spacing:.1em; }} h1 {{ margin:7px 0; font-size:32px; letter-spacing:-.04em; }} .question {{ color:var(--muted); font-size:16px; }} .notice {{ border-left:3px solid var(--orange); padding:10px 14px; color:#5d514b; background:#fff6f2; font-size:13px; }}
-  h2 {{ margin:37px 0 12px; font-size:20px; letter-spacing:-.03em; }} .gt_table {{ margin:0 0 20px; }} .gt_table table {{ width:100%; border-collapse:collapse; font-size:12px; }} .gt_table th {{ color:#55554f; background:#f7f7f3; }} .gt_table th,.gt_table td {{ border-bottom:1px solid var(--line); padding:8px 9px; text-align:left; vertical-align:top; }} footer {{ margin-top:44px; color:var(--muted); font-size:12px; }} @media print {{ body {{ padding:22px; }} }}
-</style></head><body><header><span class="eyebrow">PROVENANCE-AWARE SYNTHETIC POLICY RESEARCH</span><h1>페르소나 복원기 연구 보고서</h1><p class="question">{question}</p><p class="notice">{escape(REPORT_NOTICE)}</p></header>{table_html}<h2>해석 한계</h2><ul><li>승인된 제약만 계산에 사용했습니다.</li><li>점추정은 구조 가정에 의존하며, 식별구간과 구별해야 합니다.</li><li>합성 페르소나는 실제 개인·실제 응답·대표 표본이 아닙니다.</li></ul><footer>run id: {escape(_text(run.get("id")))} · 로컬 provenance artifact</footer></body></html>"""

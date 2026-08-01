@@ -18,7 +18,7 @@ from .personas import (
     simulate_survey,
 )
 from .policy_review import build_policy_plan, policy_brief, summarize_panel_interviews, weighted_segments
-from .reporting import render_html_report, render_markdown_report
+from .reporting import render_markdown_report
 from .sources import (
     fetch_data_go_api,
     fetch_kosis_statistics,
@@ -160,7 +160,7 @@ class ResearchAgent:
             self.store.append_event(run_id, "tool.started", {"tool": "personas.sample_joint_distribution"})
             sampled = self.create_personas(
                 run_id,
-                {"adult_population_confirmed": True, "count": 24, "seed": 20260801},
+                {"adult_population_confirmed": True, "count": 3, "seed": 20260801},
             )
             self.store.append_event(
                 run_id,
@@ -216,7 +216,7 @@ class ResearchAgent:
             "run": final_run,
             "message": message,
             "research": research,
-            "artifacts": {"html_report": report["report_url"], **report["downloads"]},
+            "artifacts": {"report": report["report_url"], **report["downloads"]},
         }
 
     @staticmethod
@@ -424,7 +424,7 @@ class ResearchAgent:
         plan = self._latest_policy_plan(run)
         if plan.get("status") == "SAFETY_BLOCKED":
             raise DomainError("SAFETY_BLOCKED", str(plan.get("blocked_reason")))
-        queries = list(plan.get("evidence_queries", []))[:4]
+        queries = list(plan.get("evidence_queries", []))[:3]
         candidates: list[dict[str, Any]] = []
         failures: list[dict[str, str]] = []
         with ThreadPoolExecutor(max_workers=max(1, len(queries))) as executor:
@@ -610,7 +610,8 @@ class ResearchAgent:
                 "FEASIBLE_MODEL_REQUIRED", "feasible한 통계 모델 또는 명시된 scenario-only 모델이 필요합니다."
             )
         seed = int(payload.get("seed", 20260801))
-        personas = sample_personas(result["states"], result["distribution"], int(payload.get("count", 20)), seed)
+        requested_count = int(payload.get("count", 3))
+        personas = sample_personas(result["states"], result["distribution"], min(requested_count, 3), seed)
         result["personas"] = {
             "seed": seed,
             "items": personas,
@@ -790,14 +791,11 @@ class ResearchAgent:
         self.store.update_run(run_id, status="completed")
         report_run = self.store.get_run(run_id)
         report = render_markdown_report(report_run)
-        html_report = render_html_report(report_run)
         path = self.store.write_artifact(run_id, "report.md", report)
-        html_path = self.store.write_artifact(run_id, "report.html", html_report)
         policy_review = (report_run.get("result") or {}).get("policy_review")
         downloads: dict[str, str] = {}
         if policy_review:
             downloads = {
-                "policy_brief": self.store.write_artifact(run_id, "policy_brief.md", policy_review["brief"]),
                 "panel": self.store.write_artifact(
                     run_id,
                     "panel.jsonl",
@@ -808,32 +806,13 @@ class ResearchAgent:
                     "interviews.jsonl",
                     "\n".join(json.dumps(item, ensure_ascii=False) for item in policy_review["interviews"]) + "\n",
                 ),
-                "evidence": self.store.write_artifact(
-                    run_id,
-                    "evidence.json",
-                    json.dumps(
-                        {
-                            "sources": report_run["sources"],
-                            "constraints": report_run["constraints"],
-                            "excluded_sources": ((report_run.get("result") or {}).get("research") or {}).get(
-                                "excluded_sources", []
-                            ),
-                            "search_candidates": ((report_run.get("result") or {}).get("research") or {}).get(
-                                "candidates", []
-                            ),
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                ),
             }
         self.store.append_event(run_id, "report.completed", {"artifact": path})
         self._persist_manifest(run_id)
         return {
             "markdown": report,
             "artifact": path,
-            "html_artifact": html_path,
-            "report_url": f"/api/runs/{run_id}/artifacts/report.html",
+            "report_url": f"/api/runs/{run_id}/artifacts/report.md",
             "downloads": {key: f"/api/runs/{run_id}/artifacts/{Path(value).name}" for key, value in downloads.items()},
             "run": self.store.get_run(run_id),
         }
