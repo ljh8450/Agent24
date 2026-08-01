@@ -16,6 +16,27 @@ def _contains_any(question: str, terms: tuple[str, ...]) -> bool:
     return any(term in question for term in terms)
 
 
+def _compact_safety_text(value: str) -> str:
+    """Normalize whitespace and punctuation so a safety check cannot be trivially spaced apart."""
+    return re.sub(r"[\W_]+", "", value.casefold())
+
+
+HIGH_IMPACT_DOMAINS = ("채용", "고용", "구직", "신용", "대출", "보험", "의료", "진료", "교육", "입학", "수사", "범죄", "지원")
+INDIVIDUAL_DECISIONS = ("자동판정", "자동결정", "판정", "심사", "선별", "골라", "고르", "배제", "제한", "거절", "탈락", "등급")
+SENSITIVE_ATTRIBUTES = ("우울", "정신질환", "질병", "성격", "정치성향")
+
+
+def _contains_unsafe_plan_content(value: str) -> bool:
+    compact = _compact_safety_text(value)
+    return any(term in compact for term in SENSITIVE_ATTRIBUTES) or (
+        any(term in compact for term in HIGH_IMPACT_DOMAINS)
+        and (
+            any(term in compact for term in INDIVIDUAL_DECISIONS)
+            or ("대상자" in compact and "선정" in compact)
+        )
+    )
+
+
 THEMES: tuple[dict[str, Any], ...] = (
     {
         "id": "democratic_rights",
@@ -235,13 +256,16 @@ def _request_type(question: str) -> str:
 
 
 def _is_unsafe(question: str) -> str | None:
-    lowered = question.lower()
-    political = _contains_any(lowered, ("보수", "진보", "지지자", "투표", "선거")) and _contains_any(
-        lowered, ("설득", "조작", "공략", "골라")
+    compact = _compact_safety_text(question)
+    political = _contains_any(compact, ("보수", "진보", "지지자", "투표", "선거")) and _contains_any(
+        compact, ("설득", "조작", "공략", "골라", "고르")
     )
-    coercion = _contains_any(lowered, ("강제로", "반드시", "유인해서", "불이익", "배제"))
-    sensitive_inference = _contains_any(lowered, ("우울", "정신질환", "질병", "성격", "정치성향")) and _contains_any(
-        lowered, ("예측", "추론", "골라")
+    coercion = _contains_any(compact, ("강제로", "반드시", "유인해서", "불이익", "배제"))
+    sensitive_inference = _contains_any(compact, SENSITIVE_ATTRIBUTES) and _contains_any(
+        compact, ("예측", "추론", "골라", "고르", "선별")
+    )
+    high_impact_decision = any(term in compact for term in HIGH_IMPACT_DOMAINS) and (
+        any(term in compact for term in INDIVIDUAL_DECISIONS) or ("대상자" in compact and "선정" in compact)
     )
     if political:
         return (
@@ -251,6 +275,10 @@ def _is_unsafe(question: str) -> str | None:
         return "강압·배제·불이익을 전제로 한 정책 최적화는 지원하지 않습니다. 자발적 접근성과 형평성 검토로 바꾸세요."
     if sensitive_inference:
         return "인구통계로 민감 특성을 추론하거나 표적화하는 요청은 지원하지 않습니다. 집계 수준의 비식별 서비스 접근성 분석으로 바꾸세요."
+    if high_impact_decision:
+        return (
+            "개인별 고위험 판단·자격 선별은 지원하지 않습니다. 집계 수준에서 접근 장벽과 정보 제공 방식을 검토하세요."
+        )
     return None
 
 
@@ -266,6 +294,8 @@ DEFAULT_INTERVIEW_QUESTIONS = [
 def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
     """Validate a model-designed plan; any violation falls back to the keyword templates."""
     if not isinstance(raw, dict):
+        return None
+    if _contains_unsafe_plan_content(str(raw)):
         return None
     variables_raw = raw.get("variables")
     if not isinstance(variables_raw, list) or not 2 <= len(variables_raw) <= 4:

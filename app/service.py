@@ -25,6 +25,7 @@ from .personas import (
     synthesize_policy_insights,
 )
 from .policy_review import (
+    _is_unsafe,
     build_policy_plan,
     labeled_attributes,
     policy_brief,
@@ -135,6 +136,11 @@ class ResearchAgent:
         except DomainError:
             return "policy_review"
 
+    @staticmethod
+    def safety_block_reason(text: str) -> str | None:
+        """Apply the policy-input safety boundary before selecting a conversational lane."""
+        return _is_unsafe(" ".join(text.split()))
+
     def remember_turn(self, session_id: str, role: str, text: str) -> None:
         if not session_id or not text:
             return
@@ -178,6 +184,8 @@ class ResearchAgent:
         return "\n".join(parts)
 
     def converse(self, session_id: str, text: str) -> str:
+        if blocked_reason := self.safety_block_reason(text):
+            return blocked_reason
         self._load_chat(session_id)
         memory = list(self.chat_memory.get(session_id) or [])[-12:]
         reply = converse_with_memory(text, memory, self._session_run_context(session_id))
@@ -187,6 +195,9 @@ class ResearchAgent:
 
     def converse_stream(self, session_id: str, text: str, mode: str = "chat"):
         """Yield the conversational reply token-by-token, persisting the exchange at the end."""
+        if blocked_reason := self.safety_block_reason(text):
+            yield blocked_reason
+            return
         self._load_chat(session_id)
         memory = list(self.chat_memory.get(session_id) or [])[-12:]
         context = self._session_run_context(session_id)
