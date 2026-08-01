@@ -37,5 +37,19 @@ class ProjectStoreConnectionTests(unittest.TestCase):
         self.assertTrue(connection.closed)
 
 
+class InboundDedupeTests(unittest.TestCase):
+    def test_same_client_event_id_returns_the_same_run(self):
+        import tempfile
+        from pathlib import Path
+
+        from app.service import ResearchAgent
+
+        with tempfile.TemporaryDirectory() as root:
+            agent = ResearchAgent(Path(root))
+            first = agent.chat("대전 청년 버스 요금 지원을 검토해줘", "evt-1")["run"]
+            second = agent.chat("대전 청년 버스 요금 지원을 검토해줘", "evt-1")["run"]
+            self.assertEqual(first["id"], second["id"])
+
+
 if __name__ == "__main__":
     unittest.main()

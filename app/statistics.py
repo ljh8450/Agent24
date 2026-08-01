@@ -87,7 +87,8 @@ def _simple_ipf(
             mask = _row(problem.states, constraint.where).astype(bool)
             current = float(p[mask].sum())
             target = constraint.value
-            if current <= 0 and target > 0 or current >= 1 and target < 1:
+            # current가 1e-100 같은 극소 양수면 target/current 곱이 오버플로한다 — 허용오차 미만은 실패 처리.
+            if (current < TOLERANCE and target > 0) or (current > 1 - TOLERANCE and target < 1):
                 return None, iteration, float("inf")
             if current > 0:
                 p[mask] *= target / current

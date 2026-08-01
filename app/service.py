@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,8 @@ class ResearchAgent:
         # intentionally in-process only (not part of the auditable run provenance).
         self.chat_memory: dict[str, list[dict[str, str]]] = {}
         self.session_last_run: dict[str, str] = {}
+        # ponytail: 세션 dict 전체를 하나의 락으로 보호 — 세션별 락은 경합이 실측되면.
+        self._chat_lock = threading.Lock()
 
     def _chat_path(self, session_id: str) -> Path:
         safe = re.sub(r"[^0-9A-Za-z_-]", "_", session_id)[:80]
@@ -81,7 +84,9 @@ class ResearchAgent:
             "turns": self.chat_memory.get(session_id, []),
             "last_run_id": self.session_last_run.get(session_id),
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
 
     def list_chats(self, limit: int = 8) -> list[dict[str, Any]]:
         directory = self.store.data_dir / "chats"
@@ -133,11 +138,12 @@ class ResearchAgent:
     def remember_turn(self, session_id: str, role: str, text: str) -> None:
         if not session_id or not text:
             return
-        self._load_chat(session_id)
-        memory = self.chat_memory.setdefault(session_id, [])
-        memory.append({"role": role, "text": text[:2000]})
-        del memory[:-24]
-        self._persist_chat(session_id)
+        with self._chat_lock:
+            self._load_chat(session_id)
+            memory = self.chat_memory.setdefault(session_id, [])
+            memory.append({"role": role, "text": text[:2000]})
+            del memory[:-24]
+            self._persist_chat(session_id)
 
     def bind_session_run(self, session_id: str, run_id: str) -> None:
         if session_id:
