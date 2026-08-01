@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#000000">
+    <title>페르소나 복원기 · 정책 검토 에이전트</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="workbench-shell" data-testid="app-shell">
+      <aside class="workbench-sidebar" aria-label="정책 검토 탐색">
+        <header class="sidebar-header">
+          <button class="product-brand" type="button" data-action="new-policy"><span class="brand-mark">◈</span><strong>Persona Restorer</strong></button>
+          <button class="icon-button" type="button" title="사이드바 접기" aria-label="사이드바 접기">‹</button>
+        </header>
+        <div class="sidebar-actions"><button class="new-study-button" type="button" data-action="new-policy"><span>＋</span><span>새 정책 검토</span></button></div>
+        <nav class="workspace-nav" aria-label="정책 검토 작업공간">
+          <button class="workspace-nav-item is-active" type="button"><span>▣</span><span>정책 검토</span></button>
+        </nav>
+        <section class="project-list" aria-label="로컬 정책 검토">
+          <div class="sidebar-label"><span>저장된 검토 세션</span><small id="study-count">0</small></div>
+          <label class="study-filter"><span>⌕</span><input id="study-filter" placeholder="세션 검색"></label>
+          <div id="study-list" class="study-filter-empty">새 정책 검토를 시작하세요.</div>
+        </section>
+        <footer class="sidebar-bottom"><div class="orchestrator-status"><span>◌</span><span><strong>Evidence gateway</strong><small><i></i>로컬 연결됨</small></span></div></footer>
+      </aside>
+
+      <section class="workbench-main">
+        <header class="workbench-topbar">
+          <button class="icon-button topbar-back" type="button" data-action="new-policy" aria-label="새 정책 검토">←</button>
+          <div class="project-heading"><span>Policy review</span><span>›</span><strong id="run-title">새 정책 검토</strong></div>
+          <div class="topbar-actions"><span class="save-state" id="run-status">입력 대기</span></div>
+        </header>
+
+        <div class="workbench-body">
+          <section class="primary-workspace">
+            <section class="chat-view" aria-label="정책 검토 대화">
+              <div class="chat-scroll" id="chat-scroll">
+                <div class="chat-thread">
+                  <header class="chat-study-header"><span>PUBLIC EVIDENCE · PGM · SYNTHETIC PANEL</span><h1>정책 검토 에이전트</h1><p id="run-subtitle">정책 의도 한 문장을 받으면 조사 설계, 한국 근거 수집, PGM, 합성 패널, 권리 검토와 보고서까지 에이전트가 실행합니다.</p></header>
+                  <section class="chat-message" id="welcome"><div class="chat-message-body"><strong>정책 검토 에이전트</strong><p>검토할 정책을 한 문장으로 적으세요. 사용자는 통계 변수나 API 값을 입력하지 않습니다. 모든 실행물과 출처는 우측 Artifacts에 남습니다.</p></div></section>
+                  <section id="conversation" aria-live="polite"></section>
+                  <section id="search-results" class="source-results" data-testid="source-results" aria-live="polite"></section>
+                  <section id="policy-review" class="policy-review" data-testid="policy-review" aria-live="polite"></section>
+                </div>
+              </div>
+              <form id="chat-form" class="chatgpt-composer" data-testid="research-composer">
+                <span class="chatgpt-composer-attach" aria-hidden="true">＋</span>
+                <div class="composer-input-shell"><textarea id="chat-input" data-testid="question-input" required placeholder="정책 목표, 대상, 지역, 기간 또는 예산을 입력하세요" rows="1"></textarea></div>
+                <button class="composer-agent-trigger" type="button" title="에이전트 구성" aria-label="에이전트 구성">Auto⌄</button>
+                <button class="chatgpt-composer-send" type="submit" data-testid="start-research" aria-label="정책 검토 시작">↑</button>
+              </form>
+            </section>
+          </section>
+
+          <aside class="study-inspector" aria-label="정책 검토 작업 상세">
+            <div class="inspector-title"><div><span>정책 검토 워크스페이스</span><small id="inspector-status">에이전트 산출물 대기</small></div><span class="live-dot">●</span></div>
+            <section class="inspector-section task-detail"><h2 id="detail-title">선택된 작업</h2><div id="detail-copy" class="inspector-empty">왼쪽 대화에서 정책 검토를 시작하면 도구 요청·응답과 산출물이 이 영역에 표시됩니다.</div></section>
+            <section class="inspector-section artifact-hero" id="artifacts"><h2>문서 · 실행물</h2><div id="download-links" class="artifact-list" data-testid="artifact-list">대화가 완료되면 브리프·패널·인터뷰·증거·보고서가 여기에 남습니다.</div></section>
+            <section class="inspector-section" id="evidence"><h2>출처 · Provenance</h2><div id="source-ledger" class="inspector-empty">한국 공공기관·연구 출처를 기다리는 중</div></section>
+            <section class="inspector-section"><h2>PGM 결과</h2><div id="distribution-core" class="inspector-state" data-testid="distribution-core"><span>◌</span><div><strong id="distribution-tag">NOT ESTIMATED</strong><small id="distribution-detail">에이전트가 정량 근거를 검증합니다.</small></div></div></section>
+            <section class="inspector-section" id="panel"><h2>합성 페르소나 프로필</h2><div id="swarm-personas" data-testid="swarm-personas" class="panel-list">PGM 또는 시나리오 모델 뒤 생성됩니다.</div></section>
+            <section class="inspector-section"><h2>실행 Provenance</h2><div id="provenance-summary" class="provenance-list" data-testid="provenance-summary">도구 실행 기록을 기다리는 중</div></section>
+          </aside>
+        </div>
+      </section>
+      <aside class="document-drawer" id="document-drawer" aria-label="문서 뷰어" aria-hidden="true">
+        <div class="document-resizer" data-document-resizer aria-hidden="true"></div>
+        <header class="document-toolbar"><button type="button" data-document-close aria-label="문서 닫기">‹</button><span>▤</span><strong id="document-title">문서</strong><span class="document-spacer"></span><button type="button" data-document-download aria-label="다운로드">⇩</button><button type="button" data-document-close aria-label="문서 닫기">×</button></header>
+        <nav class="document-tabs" id="document-tabs" aria-label="열린 문서"></nav>
+        <iframe id="document-frame" title="문서 내용"></iframe>
+      </aside>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
