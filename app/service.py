@@ -550,7 +550,8 @@ class ResearchAgent:
                 except DomainError:
                     continue
                 head = source_excerpt(self.root, candidate.as_dict(), 4000)
-                if '"err"' in head[:80] or '"UNIT_NM":"%"' not in head.replace(" ", ""):
+                # excerpt는 압축 형식('항목 = 값 %')이다 — raw JSON 마커가 아니라 단위 기호로 거른다.
+                if "%" not in head:
                     continue
                 source = candidate
                 break
@@ -568,6 +569,9 @@ class ResearchAgent:
         """Navigation, login and portal home pages never carry the published numbers."""
         lowered = url.lower()
         if any(token in lowered for token in ("login", "signin", "sso.", "/member", "/join", "/search?")):
+            return False
+        # KOSIS 포털은 JS 렌더링이라 웹 스냅샷에 수치가 없다 — KOSIS 수치는 OpenAPI 경로가 담당한다.
+        if "kosis.kr" in lowered:
             return False
         from urllib.parse import urlparse
 
