@@ -331,3 +331,25 @@ class PolicyReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BriefWordingTests(unittest.TestCase):
+    def test_single_policy_brief_does_not_imply_alternatives(self):
+        from app.personas import _percent_shares
+        from app.policy_review import policy_brief
+
+        plan = {
+            "target_population": "서울 청년",
+            "policy_focus": "문화 이용권",
+            "alternatives": [{"id": "original", "label": "문화패스 (검토 요청안)", "hypothesis": "가설"}],
+        }
+        panel = [{"id": "P01", "display_name": "가온", "weight": 1.0, "attributes": []}]
+        interviews = [{"segment_id": "P01", "policy_id": "original", "response": "support", "reason": "좋다"}]
+        brief = policy_brief(plan, panel, interviews)
+        self.assertNotIn("상위 대안", brief)
+
+        plan_two = {**plan, "alternatives": plan["alternatives"] + [{"id": "alt1", "label": "대안", "hypothesis": "가설"}]}
+        self.assertIn("상위 대안", policy_brief(plan_two, panel, interviews))
+
+        # 인사이트 모델에는 자릿수가 정리된 퍼센트만 넘긴다 ('12.422222%' 방지)
+        self.assertEqual(_percent_shares({"original": {"support": 0.12422222}}), {"original": {"support": "12.4%"}})

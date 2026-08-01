@@ -217,7 +217,7 @@ def _policy_brief_html(review: dict[str, Any], plan: dict[str, Any]) -> str:
         (
             "판정",
             brief.get("판정")
-            or "가상 패널 모의 인터뷰 기준으로는 요청받은 정책안 단독 확정보다 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
+            or "가상 패널 모의 인터뷰 기준으로는 정책안을 바로 확정하기보다 소규모 시범사업으로 실제 반응을 확인할 것을 권장합니다.",
         ),
         ("권리·법률 사전검토", brief.get("권리·법률 사전검토") or fallback_rights),
         (
@@ -228,7 +228,7 @@ def _policy_brief_html(review: dict[str, Any], plan: dict[str, Any]) -> str:
         (
             "현실 검증 계획",
             brief.get("현실 검증 계획")
-            or "- 기간: 4주 소규모 시범\n- 비교: 검토 요청안 / 상위 대안 / 기존 서비스\n- 수집: 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
+            or "- 기간: 4주 소규모 시범\n- 비교: 검토 요청안 / 기존 서비스\n- 수집: 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
         ),
     )
     return '<div class="brief-grid">' + "".join(

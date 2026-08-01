@@ -142,6 +142,19 @@ def _call_synthesis_model(prompt: str) -> dict[str, Any]:
     return _call_json_model(prompt)
 
 
+def _percent_shares(responses: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    """Hand the writer print-ready percentages; raw fractions came back as '12.422222%'."""
+    return {
+        policy_id: {
+            response: f"{float(value) * 100:.1f}%"
+            for response, value in (counts or {}).items()
+            if isinstance(value, (int, float))
+        }
+        for policy_id, counts in (responses or {}).items()
+        if isinstance(counts, dict)
+    }
+
+
 def synthesize_policy_insights(
     plan: dict[str, Any],
     panel: list[dict[str, Any]],
@@ -178,6 +191,9 @@ def synthesize_policy_insights(
         "their Korean name field (e.g. 가온, 나래), never by codes like P01\n"
         "### 사각지대와 리스크 — who is likely missed, which assumption is most fragile\n"
         "### 다음 검증 — the 2~3 highest-value real-world measurements to run next\n"
+        "Name each policy by its Korean label (shortened if long), never by its internal id and never as '원안' — the "
+        "reader has not seen the request text. When only one policy is listed, do not compare it against other options "
+        "or imply alternatives exist.\n"
         "Prefer compact markdown tables (| 열 | ... |) whenever content is enumerable: render 세그먼트 패턴 as a table with "
         "columns 조합/반응/핵심 요인, and 다음 검증 as a table with columns 검증/방법/판별할 질문. Use bullet prose only for "
         "genuinely narrative points. Keep every cell short.\n"
@@ -185,7 +201,8 @@ def synthesize_policy_insights(
         "say so when interpreting percentages).\n"
         f"Plan: {json.dumps({'focus': plan.get('policy_focus'), 'target': plan.get('target_population'), 'alternatives': [{'id': a.get('id'), 'label': a.get('label'), 'hypothesis': a.get('hypothesis')} for a in plan.get('alternatives', [])]}, ensure_ascii=False)}\n"
         f"Approved real-statistic constraints (these axes carry REAL population weights): {json.dumps(approved_constraints or [], ensure_ascii=False)}\n"
-        f"Weighted response shares per alternative (panel weights already applied): {json.dumps(responses or {}, ensure_ascii=False)}\n"
+        "Weighted response shares per alternative (panel weights already applied), as ready-to-print percentages — "
+        f"quote them exactly as given, never re-derive or add digits: {json.dumps(_percent_shares(responses), ensure_ascii=False)}\n"
         f"Cells with positive share but ZERO seats in the sample (unheard groups — address them explicitly in 사각지대와 리스크): {json.dumps(omitted_cells or [], ensure_ascii=False)}\n"
         f"Panel: {json.dumps(compact_panel, ensure_ascii=False)}\n"
         f"Interviews: {json.dumps(compact_interviews, ensure_ascii=False)}"
