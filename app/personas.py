@@ -343,7 +343,13 @@ def converse_with_memory(question: str, memory: list[dict[str, str]], context: s
     return reply.strip()
 
 
-def _published_table_preview(question: str) -> list[str]:
+# 단독으로 검색하면 주제와 무관한 표만 끌어오는 일반어 — 토큰에서 제외한다.
+GENERIC_SEARCH_TOKENS = frozenset(
+    {"해당", "정책", "가능성", "조사", "검토", "지원", "사업", "기획", "기획서", "개요", "대상", "추진", "요약", "효과", "방안", "계획"}
+)
+
+
+def _published_table_preview(question: str, topic_text: str = "") -> list[str]:
     """질문 토큰으로 KOSIS 통합검색을 가볍게 훑어 실존 표 제목을 모은다.
 
     플랜 변수를 '찾을 수 있는' 개념에 정합시키기 위한 힌트다. 키가 없거나
@@ -353,11 +359,14 @@ def _published_table_preview(question: str) -> list[str]:
         return []
     from .sources import search_kosis_tables
 
+    # 첨부·세션 맥락이 있으면 그쪽이 주제다 — 요청문("해당 정책 가능성 조사해줘")만으로 검색하면
+    # 주제와 무관한 표가 메뉴로 올라오고, 플랜이 거기에 변수를 맞춰버린다.
     tokens: list[str] = []
-    for raw in re.split(r"[^0-9A-Za-z가-힣]+", question):
-        token = re.sub(r"(을|를|은|는|의|에서|에게|으로|로)$", "", raw)
-        if len(token) >= 2 and token not in tokens:
-            tokens.append(token)
+    for source in (topic_text[:400], question):
+        for raw in re.split(r"[^0-9A-Za-z가-힣]+", source):
+            token = re.sub(r"(을|를|은|는|의|에서|에게|으로|로)$", "", raw)
+            if len(token) >= 2 and token not in tokens and token not in GENERIC_SEARCH_TOKENS:
+                tokens.append(token)
     titles: list[str] = []
     for token in tokens[:4]:
         try:
@@ -374,7 +383,7 @@ def llm_policy_plan(
     question: str, attachment_text: str | None = None, prior_context: str | None = None
 ) -> dict[str, Any]:
     """Ask the configured model to design question-specific, statistics-measurable plan pieces."""
-    preview = _published_table_preview(question)
+    preview = _published_table_preview(question, (attachment_text or prior_context or ""))
     context_block = (
         "Recent session context — the user may refer to it with words like '해당 정책', '그 정책', '아까 그 안' "
         "(use it to identify the policy under review):\n" + prior_context[:2000] + "\n---\n"

@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -137,6 +138,27 @@ class SimulatePolicyInterviewTests(unittest.TestCase):
 
 
 class PublishedTablePreviewTests(unittest.TestCase):
+    def test_search_tokens_come_from_the_attached_document_not_the_request_wording(self):
+        calls: list[str] = []
+
+        def fake_search(token, limit):
+            calls.append(token)
+            return [{"survey_name": "사회조사", "table_name": f"{token} 표"}]
+
+        with (
+            patch.dict(os.environ, {"KOSIS_API_KEY": "test-key"}),
+            patch("app.sources.search_kosis_tables", side_effect=fake_search),
+        ):
+            titles = personas._published_table_preview(
+                "해당 정책 가능성 조사해줘", "# 서울 청년 문화패스 기획서\n서울 거주 청년에게 문화 이용권을 지급한다."
+            )
+
+        self.assertTrue(titles)
+        # 요청문의 일반어가 아니라 첨부 문서의 주제어로 검색해야 한다.
+        self.assertIn("문화패스", calls)
+        self.assertNotIn("가능성", calls)
+        self.assertNotIn("정책", calls)
+
     def test_real_table_titles_are_injected_into_the_plan_prompt(self):
         tables = [
             {"survey_name": "주거실태조사", "table_name": "지역별 소득계층별 점유형태", "org_id": "116", "table_id": "T1", "path": ""}
