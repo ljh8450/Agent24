@@ -533,7 +533,7 @@ class ResearchAgent:
                 "broader_candidates": sum(
                     1
                     for item in constraints
-                    if item.get("population_compatibility") == "broader"
+                    if item.get("population_compatibility") in {"broader", "restricted"}
                     and item.get("review_status") == "candidate"
                     and str(item.get("raw_statement", "")).strip()
                 ),
@@ -622,7 +622,7 @@ class ResearchAgent:
         # 변수 label·정책 초점의 토큰 겹침을 1순위로, 비율 표 여부를 2순위로 정렬한다.
         plan_tokens = {
             token
-            for text in [str(plan.get("policy_focus") or "")]
+            for text in [str(plan.get("policy_focus") or ""), str(plan.get("target_population") or "")]
             + [str(item.get("label") or "") for item in plan.get("proposed_variables") or []]
             for token in re.split(r"[^0-9A-Za-z가-힣]+", text)
             if len(token) >= 2 and token not in stopwords
@@ -631,7 +631,10 @@ class ResearchAgent:
         def relevance(table: dict[str, str]) -> int:
             return sum(1 for token in plan_tokens if token in table["table_name"])
 
+        # 플랜과 아무 토큰도 겹치지 않는 표는 %가 있어도 소음이다 — 무관 표가 3개 캡을 차지하지 않게 버린다.
         for table in sorted(collected, key=lambda item: (-relevance(item), not rate_table(item))):
+            if plan_tokens and relevance(table) == 0:
+                continue
             key = (table["org_id"], table["table_id"])
             if key in seen or len(stored) >= 3:
                 continue
@@ -789,7 +792,8 @@ class ResearchAgent:
         )
 
     def _autonomous_evidence_gate(self, run_id: str, allow_broader: bool = False) -> list[str]:
-        allowed_compat = {"exact", "broader"} if allow_broader else {"exact"}
+        # 근사 승인: 광의(broader)든 협의(restricted, 예: 독거노인 ⊂ 고령자)든 가정 명시 후 대용 가능.
+        allowed_compat = {"exact", "broader", "restricted"} if allow_broader else {"exact"}
         self.store.append_event(run_id, "tool.started", {"tool": "review.auto_approve_exact_constraints"})
         run = self.store.get_run(run_id)
         trusted_sources = {
@@ -823,7 +827,7 @@ class ResearchAgent:
         chosen = list(selected_by_cell.values())
         selected = [item["id"] for item in chosen]
         if selected:
-            broader_note = "전국(광의) 모집단 통계를 대상 집단의 근사로 사용한다는 명시적 가정 아래 자동 승인됨"
+            broader_note = "모집단이 정확히 일치하지 않는 공표 통계(광의·협의)를 대상 집단의 근사로 사용한다는 명시적 가정 아래 자동 승인됨"
             self.approve_constraints(
                 run_id,
                 {
@@ -831,7 +835,7 @@ class ResearchAgent:
                     "override_notes": {
                         item["id"]: broader_note
                         for item in chosen
-                        if item.get("population_compatibility") == "broader"
+                        if item.get("population_compatibility") in {"broader", "restricted"}
                     },
                 },
             )
@@ -1381,18 +1385,18 @@ class ResearchAgent:
                     "panel.jsonl",
                     "\n".join(json.dumps(item, ensure_ascii=False) for item in panel_records) + "\n",
                 ),
-                "interviews": self.store.write_artifact(
-                    run_id,
-                    "interviews.jsonl",
-                    "\n".join(
-                        json.dumps(item, ensure_ascii=False) for item in policy_review.get("interviews", [])
-                    )
-                    + "\n",
-                ),
                 "evidence": self.store.write_artifact(
                     run_id, "evidence.json", json.dumps(evidence_payload, ensure_ascii=False, indent=2)
                 ),
             }
+            interviews = policy_review.get("interviews") or []
+            if interviews:
+                # 인터뷰가 없는 실행(대상 이해·LLM 미설정)에는 빈 파일을 남기지 않는다.
+                downloads["interviews"] = self.store.write_artifact(
+                    run_id,
+                    "interviews.jsonl",
+                    "\n".join(json.dumps(item, ensure_ascii=False) for item in interviews) + "\n",
+                )
         for stale in ("report.md", "policy_brief.md"):
             (self.store.run_dir / run_id / stale).unlink(missing_ok=True)
         self.store.append_event(run_id, "report.completed", {"artifact": html_path})

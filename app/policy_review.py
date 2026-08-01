@@ -243,7 +243,8 @@ def _target(question: str, fallback: str) -> tuple[str, list[dict[str, str]]]:
 
 
 AUDIENCE_TERMS = ("페르소나", "알고 싶", "이해하", "누구인지", "특성을 파악")
-PLAN_REVIEW_TERMS = ("검토", "정책안", "기획안", "평가", "개선안")
+# "반응·수용"을 물으면 페르소나 언급이 있어도 모의 인터뷰가 필요한 검토 요청이다.
+PLAN_REVIEW_TERMS = ("검토", "정책안", "기획안", "기획하", "평가", "개선안", "반응", "수용")
 
 
 def _request_type(question: str) -> str:
@@ -297,6 +298,9 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
         return None
     if _contains_unsafe_plan_content(str(raw)):
         return None
+    request_type = raw.get("request_type")
+    if request_type not in ("plan_review", "audience_understanding"):
+        request_type = None  # 무효 값은 키워드 폴백에 맡긴다
     variables_raw = raw.get("variables")
     if not isinstance(variables_raw, list) or not 2 <= len(variables_raw) <= 4:
         return None
@@ -368,6 +372,7 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
     if not focus or not queries:
         return None
     return {
+        "request_type": request_type,
         "policy_focus": focus,
         "target_population": str(raw.get("target_population", "")).strip(),
         "variables": variables,
@@ -445,7 +450,7 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
     return {
         "id": plan_id,
         "status": "SAFETY_BLOCKED" if blocked_reason else "COMPLETED_WITH_ASSUMPTIONS" if assumptions else "PLANNED",
-        "request_type": _request_type(question),
+        "request_type": (llm_plan or {}).get("request_type") or _request_type(question),
         "plan_source": plan_source,
         "policy_domain": policy_domain,
         "policy_focus": policy_focus,
