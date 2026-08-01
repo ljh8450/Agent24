@@ -136,6 +136,35 @@ class SimulatePolicyInterviewTests(unittest.TestCase):
                 personas.simulate_policy_interviews(PANEL, PLAN, seed=1)
 
 
+class PartialCoverageFlagTests(unittest.TestCase):
+    def make(self, category, value, note=""):
+        return {
+            "label": category,
+            "where": {"housing_type": category},
+            "relation": "eq",
+            "value": value,
+            "mapping_note": note,
+        }
+
+    def test_partial_sum_gets_warning_note(self):
+        candidates = [self.make("multi_family", 0.021), self.make("studio_or_other", 0.014)]
+        personas._flag_partial_variable_coverage(candidates)
+        for candidate in candidates:
+            self.assertIn("부분 매핑 경고", candidate["mapping_note"])
+            self.assertIn("0.04", candidate["mapping_note"])
+
+    def test_full_coverage_stays_clean_and_duplicates_count_once(self):
+        candidates = [
+            self.make("multi_family", 0.40),
+            self.make("multi_family", 0.38),  # 기간 중복 — 첫 값만 집계
+            self.make("officetel", 0.35),
+            self.make("studio_or_other", 0.25),
+        ]
+        personas._flag_partial_variable_coverage(candidates)
+        for candidate in candidates:
+            self.assertNotIn("부분 매핑 경고", candidate.get("mapping_note", ""))
+
+
 class DecideNextEvidenceActionTests(unittest.TestCase):
     BASE = {
         "round": 1,

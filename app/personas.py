@@ -461,6 +461,12 @@ def extract_constraint_candidates(
             "When the excerpt uses the compact table form 'PRD_DE | 분류 | 항목 = 값 단위', each line is one published cell; "
             "a '%' unit means divide the value by 100 for the 0..1 constraint value. "
             "When the same measure is published for multiple periods, keep only the most recent period and drop the older ones. "
+            "COVER THE WHOLE VARIABLE: when a table publishes the categories of one plan variable as shares of the same "
+            "population, map EVERY allowed category of that variable from that table — SUM several source categories into "
+            "one plan category when needed (list the composition in mapping_note), and when the table publishes a total "
+            "(계 = 100%), derive the one remaining plan category as the remainder. A partial category set badly distorts "
+            "downstream weighting, so prefer a complete set; only fall back to partial mapping when the table truly lacks "
+            "the other categories. "
             "If a number cannot be mapped onto an allowed variable/category, omit that candidate rather than guessing. "
             "All candidates are proposals for human review, not facts.\n"
             f"Source metadata: {json.dumps({key: source.get(key) for key in ('organization', 'survey_name', 'published_at', 'population')}, ensure_ascii=False)}\n"
@@ -491,7 +497,44 @@ def extract_constraint_candidates(
             candidate["source_categories"] = {
                 str(index): str(item) for index, item in enumerate(candidate["source_categories"])
             }
+    _flag_partial_variable_coverage(candidates)
     return candidates
+
+
+def _flag_partial_variable_coverage(candidates: list[dict[str, Any]]) -> None:
+    """단일 변수 eq 제약의 범주 합이 1에서 크게 벗어나면 후보에 경고를 남긴다.
+
+    한 변수의 소수 범주만 승인되면 최대엔트로피가 잔여 질량을 미제약 범주에
+    몰아넣어 분포가 왜곡된다(#31). 같은 셀의 기간 중복은 첫 값만 센다.
+    """
+    per_category: dict[tuple[str, str], float] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("relation", "eq") != "eq":
+            continue
+        where = candidate.get("where")
+        if not isinstance(where, dict) or len(where) != 1:
+            continue
+        key, category = next(iter(where.items()))
+        try:
+            per_category.setdefault((str(key), str(category)), float(candidate.get("value", 0)))
+        except (TypeError, ValueError):
+            continue
+    totals: dict[str, float] = {}
+    for (key, _), value in per_category.items():
+        totals[key] = totals.get(key, 0.0) + value
+    partial = {key: total for key, total in totals.items() if not 0.9 <= total <= 1.1}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        where = candidate.get("where")
+        if not isinstance(where, dict) or len(where) != 1:
+            continue
+        key = str(next(iter(where)))
+        if key in partial:
+            note = str(candidate.get("mapping_note") or "").strip()
+            warning = f"[부분 매핑 경고] {key} 범주 합계 {partial[key]:.2f} — 잔여 질량이 미제약 범주로 쏠려 분포가 왜곡될 수 있음"
+            if warning not in note:
+                candidate["mapping_note"] = f"{note} {warning}".strip()
 
 
 def _demo_answer(persona: dict[str, Any], policy: str, seed: int) -> dict[str, Any]:
