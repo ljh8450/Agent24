@@ -136,5 +136,52 @@ class SimulatePolicyInterviewTests(unittest.TestCase):
                 personas.simulate_policy_interviews(PANEL, PLAN, seed=1)
 
 
+class DecideNextEvidenceActionTests(unittest.TestCase):
+    BASE = {
+        "round": 1,
+        "rounds_left": 2,
+        "approved_count": 0,
+        "candidate_count": 0,
+        "broader_candidates": 0,
+        "tried_kosis_queries": [],
+        "tried_web_queries": ["청년 주거 통계"],
+        "kosis_available": False,
+        "policy_focus": "주거 안정",
+        "target_population": "서울 청년",
+    }
+
+    def test_fallback_prefers_broader_then_kosis_then_search_then_stop(self):
+        with patch("app.personas._call_json_model", side_effect=DomainError("LLM_NOT_CONFIGURED", "no llm")):
+            broader = personas.decide_next_evidence_action({**self.BASE, "broader_candidates": 2})
+            kosis = personas.decide_next_evidence_action({**self.BASE, "kosis_available": True})
+            search = personas.decide_next_evidence_action(self.BASE)
+            stop = personas.decide_next_evidence_action({**self.BASE, "round": 2})
+        self.assertEqual(broader["action"], "approve_broader")
+        self.assertEqual(kosis["action"], "kosis")
+        self.assertEqual(search["action"], "search")
+        self.assertEqual(stop["action"], "stop")
+
+    def test_llm_decision_filters_tried_queries_and_caps_three(self):
+        raw = {
+            "action": "search",
+            "queries": ["청년 주거 통계", "국토부 주거실태조사", "q2", "q3", "q4"],
+            "reason": "새 출처가 필요합니다.",
+        }
+        with patch("app.personas._call_json_model", return_value=raw):
+            decision = personas.decide_next_evidence_action(self.BASE)
+        self.assertEqual(decision["action"], "search")
+        self.assertNotIn("청년 주거 통계", decision["queries"])
+        self.assertEqual(len(decision["queries"]), 3)
+
+    def test_contract_violation_gets_one_repair_then_fallback(self):
+        with patch(
+            "app.personas._call_json_model",
+            side_effect=[{"action": "nonsense"}, {"action": "still_bad"}],
+        ) as calls:
+            decision = personas.decide_next_evidence_action(self.BASE)
+        self.assertEqual(calls.call_count, 2)
+        self.assertEqual(decision["action"], "search")  # 결정론 폴백
+
+
 if __name__ == "__main__":
     unittest.main()
