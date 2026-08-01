@@ -69,10 +69,14 @@ class ProjectStore:
     def create_run(self, run: dict[str, Any], client_event_id: str | None = None) -> dict[str, Any]:
         with self._connect() as connection:
             if client_event_id:
-                existing = connection.execute(
-                    "SELECT run_id FROM inbound_dedupe WHERE event_id = ?", (client_event_id,)
-                ).fetchone()
-                if existing:
+                # SELECT 후 INSERT는 동시 요청에서 경쟁한다 — 예약 INSERT가 지면 기존 run을 돌려준다.
+                reserved = connection.execute(
+                    "INSERT OR IGNORE INTO inbound_dedupe VALUES (?, ?)", (client_event_id, run["id"])
+                )
+                if reserved.rowcount == 0:
+                    existing = connection.execute(
+                        "SELECT run_id FROM inbound_dedupe WHERE event_id = ?", (client_event_id,)
+                    ).fetchone()
                     return self.get_run(existing["run_id"])
             connection.execute(
                 "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -89,8 +93,6 @@ class ProjectStore:
                     run["updated_at"],
                 ),
             )
-            if client_event_id:
-                connection.execute("INSERT INTO inbound_dedupe VALUES (?, ?)", (client_event_id, run["id"]))
             self._append_event_in_connection(connection, run["id"], "run.accepted", {"question": run["question"]})
         return self.get_run(run["id"])
 
@@ -211,7 +213,10 @@ class ProjectStore:
         path = self.run_dir / run_id
         path.mkdir(exist_ok=True)
         destination = path / filename
-        destination.write_text(content, encoding="utf-8")
+        # 쓰다 죽어도 반파된 보고서가 남지 않도록 임시 파일에 쓴 뒤 원자적으로 바꿔치기한다.
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(destination)
         return str(destination.relative_to(self.root))
 
     def read_artifact(self, run_id: str, filename: str) -> bytes:

@@ -60,3 +60,5 @@ data/avatar-cache/
 data/runs/
 data/source-cache/
 data/playwright-runtime/
+scripts/spot_results/
+.claude/

@@ -66,13 +66,24 @@ def test_loop_budget_mutation_is_detected():
     assert any("budget" in failure for failure in result.failures)
 
 
-def test_tool_after_stop_mutation_is_detected():
+def test_collection_tool_after_stop_mutation_is_detected():
     case = CASES["loop-budget-02"]
     run = copy.deepcopy(FIXTURES["loop-stop"])
-    run["events"].insert(3, {"type": "tool.started", "payload": {"tool": "statistics.identification_bounds"}})
+    # 수집 계열 도구가 stop 뒤에 다시 돌면 계약 위반이다.
+    run["events"].insert(3, {"type": "tool.started", "payload": {"tool": "kosis.statistics_openapi"}})
     result = grade_trace(case, run)
     assert not result.passed
     assert any("after stop" in failure for failure in result.failures)
+
+
+def test_pipeline_tool_after_stop_is_allowed():
+    case = CASES["loop-budget-02"]
+    run = copy.deepcopy(FIXTURES["loop-stop"])
+    # 정직 완주 계약: stop 이후에도 보고서 등 파이프라인은 계속 실행된다.
+    # (통계 도구는 별도의 '승인 없는 계산' 검사가 scenario 마커를 요구하므로 여기선 보고서 도구로 검증)
+    run["events"].insert(3, {"type": "tool.started", "payload": {"tool": "report.write_provenance"}})
+    result = grade_trace(case, run)
+    assert result.passed, result.failures
 
 
 def test_broader_note_mutation_is_detected():

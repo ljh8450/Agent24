@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -25,9 +26,10 @@ from .personas import (
 )
 from .policy_review import (
     build_policy_plan,
+    labeled_attributes,
     policy_brief,
-    sampled_segments,
     summarize_panel_interviews,
+    weighted_segments,
 )
 from .reporting import render_html_report
 from .sources import (
@@ -52,6 +54,8 @@ class ResearchAgent:
         # intentionally in-process only (not part of the auditable run provenance).
         self.chat_memory: dict[str, list[dict[str, str]]] = {}
         self.session_last_run: dict[str, str] = {}
+        # ponytail: 세션 dict 전체를 하나의 락으로 보호 — 세션별 락은 경합이 실측되면.
+        self._chat_lock = threading.Lock()
 
     def _chat_path(self, session_id: str) -> Path:
         safe = re.sub(r"[^0-9A-Za-z_-]", "_", session_id)[:80]
@@ -80,7 +84,9 @@ class ResearchAgent:
             "turns": self.chat_memory.get(session_id, []),
             "last_run_id": self.session_last_run.get(session_id),
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
 
     def list_chats(self, limit: int = 8) -> list[dict[str, Any]]:
         directory = self.store.data_dir / "chats"
@@ -132,11 +138,12 @@ class ResearchAgent:
     def remember_turn(self, session_id: str, role: str, text: str) -> None:
         if not session_id or not text:
             return
-        self._load_chat(session_id)
-        memory = self.chat_memory.setdefault(session_id, [])
-        memory.append({"role": role, "text": text[:2000]})
-        del memory[:-24]
-        self._persist_chat(session_id)
+        with self._chat_lock:
+            self._load_chat(session_id)
+            memory = self.chat_memory.setdefault(session_id, [])
+            memory.append({"role": role, "text": text[:2000]})
+            del memory[:-24]
+            self._persist_chat(session_id)
 
     def bind_session_run(self, session_id: str, run_id: str) -> None:
         if session_id:
@@ -230,11 +237,20 @@ class ResearchAgent:
             message = plan["blocked_reason"]
         else:
             proposed = parse_variables(plan["proposed_variables"])
+            labels_by_id = {
+                str(item.get("id")): item.get("category_labels") or {} for item in plan["proposed_variables"]
+            }
             self.store.update_run(
                 stored["id"],
                 status="planning",
                 variables=[
-                    {"id": item.id, "label": item.label, "categories": list(item.categories)} for item in proposed
+                    {
+                        "id": item.id,
+                        "label": item.label,
+                        "categories": list(item.categories),
+                        "category_labels": labels_by_id.get(item.id, {}),
+                    }
+                    for item in proposed
                 ],
             )
             self.store.append_event(
@@ -301,13 +317,13 @@ class ResearchAgent:
         llm_ready = all(os.getenv(name) for name in ("LLM_API_URL", "LLM_API_KEY", "LLM_MODEL"))
         self._autonomous_constraint_extraction(run_id, stored_sources, llm_ready)
         approved_ids = self._autonomous_evidence_gate(run_id)
-        if not approved_ids and llm_ready:
-            approved_ids = self._evidence_recovery_loop(run_id, plan)
+        # 부분 근거(일부 변수만 제약)도 루프 대상이다 — 미커버 변수가 남아 있으면 추가 수집을 시도한다(#35).
+        if llm_ready and self._uncovered_variables(run_id):
+            approved_ids = self._evidence_recovery_loop(run_id, plan) or approved_ids
 
         self.store.append_event(run_id, "tool.started", {"tool": "statistics.identification_bounds"})
         if approved_ids:
-            computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
-            evidence_mode = "approved_public_constraints"
+            computed, evidence_mode = self._compute_with_conflict_fallback(run_id, approved_ids)
         else:
             computed = self._scenario_only_model(run_id)
             evidence_mode = "scenario_only"
@@ -425,21 +441,83 @@ class ResearchAgent:
             "artifacts": {"html_report": report["report_url"], **report["downloads"]},
         }
 
+    def _compute_with_conflict_fallback(self, run_id: str, approved_ids: list[str]) -> tuple[dict[str, Any], str]:
+        """자동 승인 제약이 서로 모순이면 최소 충돌 집합만 강등하고 재계산한다.
+
+        같은 변수를 서로 다른 분할로 공표한 두 표가 동시에 승인되면 합이 1을
+        넘어 infeasible이 된다. 사람 검토가 없는 자율 실행에서는 충돌 core를
+        'conflicted'로 강등해 나머지 근거로 계산하고, 그래도 안 되면 시나리오로
+        정직하게 내려간다. 강등 내역은 이벤트로 남는다.
+        """
+        computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
+        if computed["result"]["status"] != "infeasible":
+            return computed, "approved_public_constraints"
+        core = sorted(set(computed["result"].get("conflict_core") or []))
+        # 충돌 core에서 근거가 가장 좋은 제약 하나만 남기고 강등:
+        # ① population_compatibility == "exact" 우선(broader보다) ② raw_statement의 PRD_DE 연도 최신 우선
+        # ③ 동률이면 id 사전순. (연도 파싱은 _autonomous_evidence_gate의 latest_period와 동일 로직)
+        by_id = {item["id"]: item for item in self.store.list_constraints(run_id)}
+
+        def keep_rank(constraint_id: str) -> tuple[bool, int, str]:
+            item = by_id.get(constraint_id, {})
+            match = re.search(r"PRD_DE\D{0,4}(\d{4})", str(item.get("raw_statement", "")))
+            year = int(match.group(1)) if match else 0
+            return (item.get("population_compatibility") != "exact", -year, constraint_id)
+
+        keep = min(core, key=keep_rank) if len(core) > 1 else None
+        drop = {identifier for identifier in core if identifier != keep}
+        self.store.append_event(
+            run_id, "statistics.conflict_demoted", {"dropped_constraint_ids": sorted(drop), "conflict_core": core}
+        )
+        for item in self.store.list_constraints(run_id):
+            if item["id"] in drop:
+                item["review_status"] = "conflicted"
+                item["override_note"] = ((item.get("override_note") or "") + " [자동] 상호 모순 최소 집합으로 강등됨").strip()
+                self.store.replace_constraint(run_id, item)
+        remaining = [identifier for identifier in approved_ids if identifier not in drop]
+        if remaining:
+            computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
+            if computed["result"]["status"] != "infeasible":
+                return computed, "approved_public_constraints_after_conflict"
+        return self._scenario_only_model(run_id), "scenario_only_after_conflict"
+
+    def _uncovered_variables(self, run_id: str) -> list[str]:
+        """승인 제약이 하나도 조건으로 삼지 않은 변수 id 목록."""
+        run = self.store.get_run(run_id)
+        covered = {
+            key
+            for item in run["constraints"]
+            if item.get("review_status") == "approved"
+            for key in (item.get("where") or {})
+        }
+        return [variable["id"] for variable in run["variables"] if variable["id"] not in covered]
+
     def _evidence_recovery_loop(self, run_id: str, plan: dict[str, Any]) -> list[str]:
         """Observe the empty evidence gate and let the decision tool pick the next action.
 
         Hard budgets live in code: at most two extra rounds, three new queries per
         round, and no query is ever repeated. The model only chooses WHAT to look at.
+
+        계약(#32): 'stop' 결정은 근거 **수집**의 중단이다 — 이 루프를 벗어난 뒤에는
+        수집 계열 도구(검색·스냅샷·KOSIS·추출·게이트)를 다시 호출하지 않는다.
+        파이프라인 자체는 scenario_only로 정직하게 완주해 패널·보고서를 산출한다.
         """
         tried_web = [str(query) for query in plan.get("evidence_queries") or []]
         tried_kosis = [str(term) for term in plan.get("kosis_search_terms") or []]
         approved: list[str] = []
+        run = self.store.get_run(run_id)
+        variable_ids = [variable["id"] for variable in run["variables"]]
         for round_number in (1, 2):
             constraints = self.store.list_constraints(run_id)
+            uncovered = self._uncovered_variables(run_id)
+            if not uncovered:
+                break
             observation = {
                 "round": round_number,
                 "rounds_left": 2 - round_number,
-                "approved_count": 0,
+                "approved_count": sum(1 for item in constraints if item.get("review_status") == "approved"),
+                "covered_variables": [identifier for identifier in variable_ids if identifier not in uncovered],
+                "uncovered_variables": uncovered,
                 "candidate_count": len(constraints),
                 "broader_candidates": sum(
                     1
@@ -462,15 +540,23 @@ class ResearchAgent:
                 break
             if action == "approve_broader":
                 approved = self._autonomous_evidence_gate(run_id, allow_broader=True)
-                if approved:
+                if not self._uncovered_variables(run_id):
                     break
                 continue
             fresh = [query for query in decision["queries"] if query not in tried_web and query not in tried_kosis][:3]
             if action == "kosis":
                 if not observation["kosis_available"]:
                     continue
-                tried_kosis += fresh
-                new_sources = self._autonomous_kosis_evidence(run_id, plan, queries_override=fresh or None)
+                if fresh:
+                    tried_kosis += fresh
+                    new_sources = self._autonomous_kosis_evidence(run_id, plan, queries_override=fresh)
+                elif not tried_kosis:
+                    # KOSIS 자체가 미시도면 기본(플랜·포커스) 검색어로 1회 시도하고 재사용을 막는다.
+                    tried_kosis.append("(기본 검색어)")
+                    new_sources = self._autonomous_kosis_evidence(run_id, plan)
+                else:
+                    # 새 검색어 없이 기시도 검색어를 반복하는 낭비 라운드는 건너뛴다.
+                    continue
             else:  # search
                 if not fresh:
                     break
@@ -485,7 +571,7 @@ class ResearchAgent:
             if new_sources:
                 self._autonomous_constraint_extraction(run_id, new_sources, True)
             approved = self._autonomous_evidence_gate(run_id)
-            if approved:
+            if not self._uncovered_variables(run_id):
                 break
         return approved
 
@@ -704,6 +790,8 @@ class ResearchAgent:
             if item.get("source_id") in trusted_sources
             and item.get("population_compatibility") in allowed_compat
             and str(item.get("raw_statement", "")).strip()
+            # 0%·100% 셀(eq value가 0.005 미만 또는 0.995 초과)은 분포 정보가 없어 승인해도 근거가 되지 않으므로 제외한다.
+            and not (item.get("relation") == "eq" and not 0.005 <= float(item.get("value") or 0.0) <= 0.995)
         ]
 
         def latest_period(item: dict[str, Any]) -> int:
@@ -762,6 +850,17 @@ class ResearchAgent:
         result["evidence_gap"] = (
             "모집단·시점·분모·범주가 일치하는 공개 교차표를 자동 검증하지 못해 식별구간은 [0,1]입니다."
         )
+        stop_decision = next(
+            (
+                event.get("payload", {})
+                for event in reversed(run.get("events", []))
+                if event.get("type") == "agent.decision" and event.get("payload", {}).get("action") == "stop"
+            ),
+            None,
+        )
+        if stop_decision:
+            # stop run도 누락 이유를 보존한다(#32) — 보고서·매니페스트에서 그대로 추적 가능.
+            result["evidence_gap"] += f" 에이전트 수집 중단 사유: {stop_decision.get('reason', '')}"
         self.store.update_run(run_id, result=result, estimand=estimand, status="running")
         self.store.append_event(run_id, "statistics.scenario_only", {"reason": "no_approved_constraints"})
         self._persist_manifest(run_id)
@@ -774,7 +873,16 @@ class ResearchAgent:
         plan = self._latest_policy_plan(run)
         result = run["result"] or {}
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
+        variable_labels = {item["id"]: item.get("label") or item["id"] for item in run["variables"]}
+        category_labels = {item["id"]: item.get("category_labels") or {} for item in run["variables"]}
+        panel = weighted_segments(
+            result["states"],
+            result["distribution"],
+            limit=12,
+            evidence_level=evidence_level,
+            variable_labels=variable_labels,
+            category_labels=category_labels,
+        )
         review = {
             "status": review_status,
             "plan_id": plan["id"],
@@ -1010,7 +1118,11 @@ class ResearchAgent:
             str(payload.get("selected_model", "maximum_entropy")),
         )
         result["estimand"] = {"numerator": numerator, "denominator": denominator}
-        result["assumption"] = "maximum entropy: 관측하지 않은 고차 상호작용을 0으로 두는 명시적 구조 가정"
+        result["assumption"] = "maximum entropy: 관측하지 않은 고차 상호작용을 0으로 두는 명시적 구조 가정" + (
+            ""
+            if result.get("cross_constraint_count")
+            else " · 승인 제약이 모두 단일 변수 조건이라 변수 간 상관은 관측되지 않았고 독립으로 처리됩니다 — 조합 비중은 주변분포의 곱입니다."
+        )
         self.store.update_run(run_id, result=result, estimand=result["estimand"], status="running")
         self.store.append_event(
             run_id, "statistics.completed", {"status": result["status"], "constraint_count": len(approved)}
@@ -1069,21 +1181,32 @@ class ResearchAgent:
                 "FEASIBLE_MODEL_REQUIRED", "가중 가상 시민 패널은 PGM 또는 scenario-only 결과 뒤에만 만들 수 있습니다."
             )
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
+        variable_labels = {item["id"]: item.get("label") or item["id"] for item in run["variables"]}
+        category_labels = {item["id"]: item.get("category_labels") or {} for item in run["variables"]}
+        panel = weighted_segments(
+            result["states"],
+            result["distribution"],
+            limit=12,
+            evidence_level=evidence_level,
+            variable_labels=variable_labels,
+            category_labels=category_labels,
+        )
         demo_mode = os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1"
 
-        # 같은 결합 셀에서 표집된 인물들은 속성이 동일하므로, 셀 대표 1명씩만 모델을 호출하고
-        # 응답을 표본 전체에 복제한다 — 통계는 표본 개수(=분포 비례)로 계산된다.
+        # 내부 계산용 code로 셀을 식별하고, 표시·프롬프트에는 한국어 label을 전달한다.
         def cell_signature(segment: dict[str, Any]) -> tuple:
-            return tuple((item["variable"], item["value"]) for item in segment["attributes"])
+            return tuple(
+                (item.get("variable_code", item["variable"]), item.get("code", item["value"]))
+                for item in segment["attributes"]
+            )
 
-        # 비례 표집에서 좌석을 받지 못한 소수 세그먼트는 침묵하는 사각지대가 되므로 명시적으로 공개한다.
+        # 유니크 셀 패널의 상한 밖에 남은 세그먼트는 침묵하는 사각지대가 되므로 명시적으로 공개한다.
         total_weight = sum(float(weight) for weight in result["distribution"]) or 1.0
         sampled_cell_keys = {cell_signature(segment) for segment in panel}
         omitted_cells = sorted(
             (
                 {
-                    "attributes": [{"variable": key, "value": value} for key, value in state.items()],
+                    "attributes": labeled_attributes(state, variable_labels, category_labels),
                     "share": float(weight) / total_weight,
                 }
                 for state, weight in zip(result["states"], result["distribution"])
@@ -1093,35 +1216,21 @@ class ResearchAgent:
             reverse=True,
         )[:8]
 
-        representatives: dict[tuple, dict[str, Any]] = {}
-        for segment in panel:
-            representatives.setdefault(cell_signature(segment), segment)
-        unique_panel = list(representatives.values())
-        representative_id = {signature: segment["id"] for signature, segment in representatives.items()}
-
         narrate_pool = ThreadPoolExecutor(max_workers=1)
         narrate_future = (
-            narrate_pool.submit(narrate_panel_segments, unique_panel, plan.get("policy_focus"))
+            narrate_pool.submit(narrate_panel_segments, panel, plan.get("policy_focus"))
             if not demo_mode
             else None
         )
         try:
-            raw_interviews = simulate_policy_interviews(
-                unique_panel, plan, int((result.get("personas") or {}).get("seed", 20260801))
+            interviews = simulate_policy_interviews(
+                panel, plan, int((result.get("personas") or {}).get("seed", 20260801))
             )
-            answers_by_representative: dict[str, list[dict[str, Any]]] = {}
-            for item in raw_interviews:
-                answers_by_representative.setdefault(str(item["segment_id"]), []).append(item)
-            interviews = [
-                {**item, "segment_id": segment["id"]}
-                for segment in panel
-                for item in answers_by_representative.get(representative_id[cell_signature(segment)], [])
-            ]
             if narrate_future is not None:
                 try:
                     profiles = narrate_future.result()
                     for segment in panel:
-                        segment["narrative"] = profiles[representative_id[cell_signature(segment)]]
+                        segment["narrative"] = profiles[segment["id"]]
                 except DomainError:
                     pass
         finally:

@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.contracts import Source
 from app.service import ResearchAgent
@@ -77,6 +78,8 @@ class WorkflowTests(unittest.TestCase):
             self.run["id"], {"estimand": {"numerator": {"interest": "high"}, "denominator": {"region": "daejeon"}}}
         )
         self.assertEqual(computed["result"]["status"], "feasible")
+        self.assertEqual(computed["result"]["cross_constraint_count"], 0)
+        self.assertIn("독립으로 처리", computed["result"]["assumption"])
         sampled = self.agent.create_personas(
             self.run["id"], {"adult_population_confirmed": True, "count": 4, "seed": 7}
         )
@@ -105,6 +108,62 @@ class WorkflowTests(unittest.TestCase):
             }
         )
         self.assertEqual(variable.categories, ("jeonse", "monthly_rent"))
+
+    def test_llm_labels_flow_to_a_unique_weighted_panel_and_report(self):
+        llm_plan = {
+            "policy_focus": "청년 주거 지원",
+            "target_population": "서울 청년 1인 가구",
+            "variables": [
+                {
+                    "id": "rent_burden",
+                    "label": "월세 부담",
+                    "categories": [
+                        {"code": "under_20", "label": "월세 부담 20% 미만"},
+                        {"code": "over_20", "label": "월세 부담 20% 이상"},
+                    ],
+                },
+                {
+                    "id": "housing_type",
+                    "label": "주거 유형",
+                    "categories": [
+                        {"code": "officetel", "label": "오피스텔"},
+                        {"code": "studio", "label": "원룸"},
+                    ],
+                },
+                {
+                    "id": "service_use",
+                    "label": "주거 지원 이용",
+                    "categories": [
+                        {"code": "none", "label": "이용 경험 없음"},
+                        {"code": "used", "label": "이용 경험 있음"},
+                    ],
+                },
+            ],
+            "alternatives": [{"label": "월세 지원"}],
+            "evidence_queries": ["서울 청년 주거 통계"],
+        }
+        with patch("app.service.llm_policy_plan", return_value=llm_plan):
+            run = self.agent.chat("서울 청년 1인 가구 주거 지원 정책을 검토해줘")["run"]
+
+        self.agent._scenario_only_model(run["id"])
+        with patch.dict("os.environ", {"PERSONA_RESTORER_DEMO_MODEL": "1"}):
+            reviewed = self.agent.policy_panel_review(run["id"])
+
+        panel = reviewed["result"]["policy_review"]["panel"]
+        signatures = [
+            tuple((attribute["variable_code"], attribute["code"]) for attribute in persona["attributes"])
+            for persona in panel
+        ]
+        self.assertEqual(len(panel), 8)
+        self.assertEqual(len(signatures), len(set(signatures)))
+        self.assertAlmostEqual(sum(persona["weight"] for persona in panel), 1.0)
+        self.assertIn("월세 부담 20% 미만", {item["value"] for item in panel[0]["attributes"]})
+
+        report = self.agent.report(run["id"])
+        html = (Path(self.temp.name) / report["artifact"]).read_text(encoding="utf-8")
+        self.assertIn("월세 부담 20% 미만", html)
+        self.assertIn("오피스텔", html)
+        self.assertNotIn(">under_20<", html)
 
     def test_unknown_population_constraint_requires_explicit_override(self):
         self.agent.set_variables(self.run["id"], {"variables": [{"id": "region", "categories": ["daejeon", "other"]}]})

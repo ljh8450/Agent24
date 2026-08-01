@@ -217,7 +217,7 @@ def _policy_brief_html(review: dict[str, Any], plan: dict[str, Any]) -> str:
         (
             "판정",
             brief.get("판정")
-            or "가상 패널 모의 인터뷰 기준으로는 원안 단독 확정보다 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
+            or "가상 패널 모의 인터뷰 기준으로는 요청받은 정책안 단독 확정보다 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
         ),
         ("권리·법률 사전검토", brief.get("권리·법률 사전검토") or fallback_rights),
         (
@@ -228,7 +228,7 @@ def _policy_brief_html(review: dict[str, Any], plan: dict[str, Any]) -> str:
         (
             "현실 검증 계획",
             brief.get("현실 검증 계획")
-            or "- 기간: 4주 소규모 시범\n- 비교: 원안 / 상위 대안 / 기존 서비스\n- 수집: 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
+            or "- 기간: 4주 소규모 시범\n- 비교: 검토 요청안 / 상위 대안 / 기존 서비스\n- 수집: 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
         ),
     )
     return '<div class="brief-grid">' + "".join(
@@ -273,14 +273,28 @@ def _constraints_table_html(run: dict[str, Any]) -> str:
 def _panel_table_html(panel: list) -> str:
     if not panel:
         return ""
-    rows = "".join(
-        f"<tr><td>{escape(_persona_name(segment))}</td><td>"
-        + escape(" · ".join(_text(attr.get("value")) for attr in segment.get("attributes", [])))
-        + f"</td><td>{escape(_text(segment.get('weight_display')))}</td></tr>"
-        for segment in panel
-    )
+    # 같은 셀에서 비례 표집된 중복 인물은 한 줄로 묶는다 — 표의 정보량은 셀 단위가 전부다.
+    grouped: dict[tuple, dict] = {}
+    for segment in panel:
+        signature = tuple(
+            (attr.get("variable"), attr.get("value")) for attr in segment.get("attributes", [])
+        )
+        entry = grouped.setdefault(signature, {"segment": segment, "names": []})
+        entry["names"].append(_persona_name(segment))
+    rows = ""
+    for entry in grouped.values():
+        segment = entry["segment"]
+        names = entry["names"]
+        display = names[0] + (f" 외 {len(names) - 1}명" if len(names) > 1 else "")
+        rows += (
+            f"<tr><td>{escape(display)}</td><td>"
+            + escape(
+                " · ".join(_text(attr.get("value_label") or attr.get("value")) for attr in segment.get("attributes", []))
+            )
+            + f"</td><td>{len(names)}명</td></tr>"
+        )
     return (
-        '<div class="table-wrap"><table><tr><th>가상 인물</th><th>표집된 속성</th><th>세그먼트 비중</th></tr>'
+        '<div class="table-wrap"><table><tr><th>가상 인물</th><th>표집된 속성</th><th>표본 인원</th></tr>'
         + rows
         + "</table></div>"
     )
@@ -378,13 +392,13 @@ def render_html_report(run: dict[str, Any]) -> str:
     if omitted:
         omitted_rows = "".join(
             "<tr><td>"
-            + escape(" · ".join(_text(attr.get("value")) for attr in cell.get("attributes", [])))
+            + escape(" · ".join(_text(attr.get("value_label") or attr.get("value")) for attr in cell.get("attributes", [])))
             + f"</td><td>{float(cell.get('share', 0)) * 100:.1f}%</td></tr>"
             for cell in omitted
         )
         omitted_html = (
             "<h3>표본 밖 세그먼트</h3>"
-            '<p class="footnote">모집단 비중이 있으나 비례 표집에서 좌석을 받지 못해 이번 표본에서 발화하지 못한 집단입니다. '
+            '<p class="footnote">모집단 비중이 있으나 유니크 셀 패널 상한 밖에 있어 이번 패널에서 발화하지 못한 집단입니다. '
             "사각지대 해석 시 반드시 고려하세요.</p>"
             '<div class="table-wrap"><table><tr><th>속성 조합</th><th>모집단 비중</th></tr>' + omitted_rows + "</table></div>"
         )
@@ -425,12 +439,14 @@ def render_html_report(run: dict[str, Any]) -> str:
 {_policy_brief_html(review, plan)}
 {f'<p class="callout warn">{escape(_text(review.get("warning")))}</p>' if review.get("warning") else ""}
 </section>
-<section><h2><span>2</span>정책안별 반응 분포</h2>{_stacked_bars_html(review)}</section>
-<section><h2><span>3</span>종합 인사이트</h2>{insights_html}</section>
+<section><h2><span>2</span>종합 인사이트 · 다음 실측 우선순위</h2>{insights_html}</section>
+<section><h2><span>3</span>정책안별 반응 분포</h2>
+<p class="callout">이 분포는 실측 대상을 고르기 위한 가설 신호입니다 — 실제 찬성률이 아니며 절대 수치로 해석하지 마세요.</p>
+{_stacked_bars_html(review)}</section>
 <section><h2><span>4</span>표본 구성과 근거</h2>
 {_constraints_table_html(run)}
 {_panel_table_html(panel)}
-<p class="footnote">가상 인물은 결합분포에서 비례 표집한 완전 합성 세그먼트이며, 같은 속성 조합은 대표 응답을 공유합니다.</p>
+<p class="footnote">가상 인물은 결합분포의 서로 다른 셀을 나타내는 완전 합성 세그먼트입니다. 각 비중은 해당 셀 확률이며 동일 속성 조합은 중복하지 않습니다.</p>
 {omitted_html}
 </section>
 <section><h2><span>5</span>가상 인물 × 정책안 반응</h2>{_matrix_table_html(review)}</section>
