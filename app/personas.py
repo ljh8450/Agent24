@@ -578,65 +578,6 @@ def _flag_partial_variable_coverage(candidates: list[dict[str, Any]]) -> None:
                 candidate["mapping_note"] = f"{note} {warning}".strip()
 
 
-def _demo_answer(persona: dict[str, Any], policy: str, seed: int) -> dict[str, Any]:
-    fingerprint = sum(ord(character) for character in f"{persona['id']}|{policy}|{seed}") % 3
-    return {
-        "persona_id": persona["id"],
-        "response": ("support", "neutral", "oppose")[fingerprint],
-        "reason": "데모 전용 결정론 응답이며 LLM 발화나 실제 여론이 아닙니다.",
-        "tag": "narrative",
-    }
-
-
-def simulate_survey(personas: list[dict[str, Any]], policy_question: str, seed: int) -> dict[str, Any]:
-    """Use a configured model only for clearly labelled fictional survey answers."""
-    if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1":
-        answers = [_demo_answer(persona, policy_question, seed) for persona in personas]
-        mode = "deterministic_demo"
-    else:
-        compact_personas = [{"id": item["id"], "attributes": item["attributes"]} for item in personas]
-        prompt = (
-            "You are simulating fully fictional adults sampled from a statistical model. "
-            "Do not claim to represent real people or surveys. Answer only JSON with an answers array. "
-            "Each answer must have persona_id, response (support|neutral|oppose), reason, tag='narrative'. "
-            "If the policy cannot be evaluated from the supplied attributes, use response='neutral' and say it is not identified.\n"
-            f"Policy question: {policy_question}\nPersonas: {json.dumps(compact_personas, ensure_ascii=False)}"
-        )
-        try:
-            answers = _call_json_model(prompt).get("answers", [])
-        except DomainError as error:
-            if error.code == "LLM_NOT_CONFIGURED":
-                raise DomainError(
-                    "LLM_NOT_CONFIGURED",
-                    "합성 설문에는 LLM_API_URL, LLM_API_KEY, LLM_MODEL이 필요합니다. 설정 전에는 페르소나 속성만 생성됩니다.",
-                ) from error
-            raise
-        except (KeyError, ValueError, urllib.error.URLError) as error:
-            raise DomainError(
-                "LLM_SURVEY_FAILED",
-                "합성 설문 모델 응답을 검증하지 못했습니다.",
-                details={"reason": type(error).__name__},
-            ) from error
-        expected = {item["id"] for item in personas}
-        if {item.get("persona_id") for item in answers} != expected or any(
-            item.get("response") not in {"support", "neutral", "oppose"} or item.get("tag") != "narrative"
-            for item in answers
-        ):
-            raise DomainError("INVALID_LLM_SURVEY_OUTPUT", "합성 설문 모델이 약속된 JSON 형식을 지키지 않았습니다.")
-        mode = "configured_llm"
-    counts = {
-        label: sum(answer["response"] == label for answer in answers) for label in ("support", "neutral", "oppose")
-    }
-    return {
-        "mode": mode,
-        "policy_question": policy_question,
-        "answers": answers,
-        "counts": counts,
-        "n": len(answers),
-        "warning": "이 결과는 완전 합성 페르소나의 모델 응답이며 실제 조사·여론·인과효과가 아닙니다.",
-    }
-
-
 def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any], seed: int) -> list[dict[str, Any]]:
     """Generate clearly-labelled fictional interviews for every weighted panel segment.
 
