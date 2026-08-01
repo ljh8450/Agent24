@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +26,18 @@ class ProjectStore:
         self.source_dir.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path)
         # Streaming status reads run alongside background writes. Let SQLite wait for
         # the short write transaction instead of failing the agent stream on a lock.
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:
