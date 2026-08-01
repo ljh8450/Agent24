@@ -161,6 +161,18 @@ class PolicyReviewTests(unittest.TestCase):
         self.assertEqual(statuses["broader_constraint"], "candidate")
         self.assertIn("review.auto_approve_exact_constraints", tools)
 
+    def test_sampled_segments_carry_korean_value_labels(self):
+        from app.policy_review import sampled_segments
+
+        panel = sampled_segments(
+            [{"v": "a"}, {"v": "b"}],
+            [0.5, 0.5],
+            size=2,
+            category_labels={"v": {"a": "가", "b": "나"}},
+        )
+        labels = {attr["value_label"] for segment in panel for attr in segment["attributes"]}
+        self.assertEqual(labels, {"가", "나"})
+
     def test_unsafe_policy_targeting_returns_a_terminal_safe_plan(self):
         unsafe = self.agent.chat("보수 성향 청년만 골라서 설득할 정책을 만들어줘")["run"]
         plan = self.agent.policy_plan(unsafe["id"])

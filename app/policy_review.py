@@ -282,14 +282,21 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
         if not isinstance(categories_raw, list) or not 2 <= len(categories_raw) <= 4:
             return None
         categories = []
+        category_labels: dict[str, str] = {}
         for category in categories_raw:
             if isinstance(category, dict):
-                # 플랜 모델이 {code,label} 객체로 주는 경우 — str(dict)로 삼키면 하류 전체가 오염된다.
-                category = category.get("code") or category.get("id") or category.get("label") or ""
+                # 플랜 모델이 {code,label} 객체로 주는 경우 — code는 계산용, label은 표시용으로 분리 보존한다.
+                code = str(category.get("code") or category.get("id") or category.get("label") or "").strip()
+                korean = str(category.get("label") or "").strip()
+                if code and korean:
+                    category_labels[code] = korean
+                category = code
             categories.append(str(category).strip())
         if not all(categories) or len(set(categories)) != len(categories):
             return None
-        variables.append({"id": var_id, "label": label, "categories": categories})
+        variables.append(
+            {"id": var_id, "label": label, "categories": categories, "category_labels": category_labels}
+        )
     if len({item["id"] for item in variables}) != len(variables):
         return None
     alternatives_raw = raw.get("alternatives")
@@ -438,6 +445,7 @@ def weighted_segments(
     distribution: list[float],
     limit: int = 12,
     evidence_level: str = "partial_estimate",
+    category_labels: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     # 같은 가중치 셀만 상위에 몰리면 차등 분포가 있어도 균일해 보인다 —
     # 가중치 티어별 라운드로빈으로 뽑아 패널이 분포의 실제 모양을 드러내게 한다.
@@ -456,7 +464,15 @@ def weighted_segments(
             "id": f"P{index:02d}",
             "display_name": SYNTHETIC_SEGMENT_NAMES[(index - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
             "avatar": notionists_avatar(f"P{index:02d}"),
-            "attributes": [{"variable": key, "value": value, "tag": "model_weighted"} for key, value in state.items()],
+            "attributes": [
+                {
+                    "variable": key,
+                    "value": value,
+                    "value_label": ((category_labels or {}).get(key) or {}).get(value, value),
+                    "tag": "model_weighted",
+                }
+                for key, value in state.items()
+            ],
             "weight": float(weight),
             "weight_display": f"{weight * 100:.1f}%",
             "evidence_level": evidence_level,
@@ -475,6 +491,7 @@ def sampled_segments(
     distribution: list[float],
     size: int = 12,
     evidence_level: str = "partial_estimate",
+    category_labels: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Draw a proportional synthetic sample: high-share cells appear multiple times, tiny cells dilute away.
 
@@ -503,7 +520,12 @@ def sampled_segments(
                     "display_name": SYNTHETIC_SEGMENT_NAMES[(position - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
                     "avatar": notionists_avatar(pid),
                     "attributes": [
-                        {"variable": key, "value": value, "tag": "model_weighted"}
+                        {
+                            "variable": key,
+                            "value": value,
+                            "value_label": ((category_labels or {}).get(key) or {}).get(value, value),
+                            "tag": "model_weighted",
+                        }
                         for key, value in states[state_index].items()
                     ],
                     "weight": 1.0 / size,

@@ -230,11 +230,20 @@ class ResearchAgent:
             message = plan["blocked_reason"]
         else:
             proposed = parse_variables(plan["proposed_variables"])
+            labels_by_id = {
+                str(item.get("id")): item.get("category_labels") or {} for item in plan["proposed_variables"]
+            }
             self.store.update_run(
                 stored["id"],
                 status="planning",
                 variables=[
-                    {"id": item.id, "label": item.label, "categories": list(item.categories)} for item in proposed
+                    {
+                        "id": item.id,
+                        "label": item.label,
+                        "categories": list(item.categories),
+                        "category_labels": labels_by_id.get(item.id, {}),
+                    }
+                    for item in proposed
                 ],
             )
             self.store.append_event(
@@ -845,7 +854,13 @@ class ResearchAgent:
         plan = self._latest_policy_plan(run)
         result = run["result"] or {}
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
+        panel = sampled_segments(
+            result["states"],
+            result["distribution"],
+            size=12,
+            evidence_level=evidence_level,
+            category_labels={item["id"]: item.get("category_labels") or {} for item in run["variables"]},
+        )
         review = {
             "status": review_status,
             "plan_id": plan["id"],
@@ -1144,7 +1159,13 @@ class ResearchAgent:
                 "FEASIBLE_MODEL_REQUIRED", "가중 가상 시민 패널은 PGM 또는 scenario-only 결과 뒤에만 만들 수 있습니다."
             )
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
+        panel = sampled_segments(
+            result["states"],
+            result["distribution"],
+            size=12,
+            evidence_level=evidence_level,
+            category_labels={item["id"]: item.get("category_labels") or {} for item in run["variables"]},
+        )
         demo_mode = os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1"
 
         # 같은 결합 셀에서 표집된 인물들은 속성이 동일하므로, 셀 대표 1명씩만 모델을 호출하고
