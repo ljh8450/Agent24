@@ -297,8 +297,32 @@ class PolicyReviewTests(unittest.TestCase):
                 "evidence_queries": ["서울 청년 주거 통계"],
             },
         )
-        self.assertEqual(plan["plan_source"], "keyword_template")
+        self.assertEqual(plan["plan_source"], "keyword_template_after_rejected_llm_plan")
         self.assertEqual(plan["policy_domain"], "housing")
+
+    def test_rights_review_naming_a_restriction_does_not_discard_the_plan(self):
+        plan = build_policy_plan(
+            "해당 정책 가능성 조사해줘",
+            "서울 청년",
+            llm_raw={
+                "policy_focus": "청년 문화패스 이용 가능성",
+                "target_population": "서울 거주 만 19~29세 청년",
+                "reviewed_policy": "서울시가 청년에게 연 20만원 문화 이용권을 지급한다",
+                "variables": [
+                    {"id": "culture_spend", "label": "문화비 지출 부담", "categories": ["high", "low"]},
+                    {"id": "awareness", "label": "정책 인지 여부", "categories": ["yes", "no"]},
+                ],
+                "alternatives": [],
+                "evidence_queries": ["청년 문화비 지출 통계"],
+                "rights_review": {
+                    "severity": "중간",
+                    "finding": "소득 기준과 소득 증빙 절차가 지원 접근을 제한할 수 있다.",
+                    "issues": ["온라인 신청만 허용하면 정보 접근이 어려운 청년이 배제될 수 있다"],
+                },
+            },
+        )
+        self.assertEqual(plan["plan_source"], "llm_designed")
+        self.assertIn("제한", plan["rights_review"]["finding"])
 
     def test_non_high_impact_policy_review_remains_available(self):
         plan = build_policy_plan("서울 청년 주거지원 안내 개선 정책을 검토해줘", "서울 청년")
