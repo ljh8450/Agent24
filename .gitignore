@@ -31,6 +31,8 @@ venv/
 env/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+*.egg-info/
 
 # Node.js
 node_modules/
@@ -42,6 +44,18 @@ yarn-error.log*
 dist/
 build/
 coverage/
+playwright-report/
+playwright-results/
+test-results/
 
-# Local Codex state
+# Local agent state
 .codex/
+.omc/
+
+# Runtime data
+data/persona_restorer.sqlite
+data/persona_restorer.sqlite-*
+data/avatar-cache/
+data/runs/
+data/source-cache/
+data/playwright-runtime/

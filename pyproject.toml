@@ -1,0 +1,22 @@
+[project]
+name = "persona-restorer"
+version = "0.1.0"
+description = "Provenance-aware synthetic policy research chatbot"
+requires-python = ">=3.12"
+dependencies = ["great-tables>=0.19", "numpy>=2.0", "pandas>=2.2", "pypdf>=5.9", "scipy>=1.14", "uvicorn>=0.30"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.14"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.uvicorn]
+factory = false
