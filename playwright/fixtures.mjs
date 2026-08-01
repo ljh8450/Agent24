@@ -108,9 +108,9 @@ export function completedReview() {
   };
 }
 
-export async function mockAutonomousReview(page) {
+export async function mockAutonomousReview(page, customize = (completed) => completed) {
   await page.route("**/api/agent/review/stream", async (route) => {
-    const completed = completedReview();
+    const completed = customize(completedReview());
     const frames = [
       ["review.accepted", { run: completed.run }],
       ["message.stream.start", { phase: "progress" }],
@@ -135,7 +135,7 @@ export async function mockAutonomousReview(page) {
       body: "<!doctype html><html><body style=\"font-family:sans-serif;padding:32px\"><h1>정책 검토 보고서</h1><p>픽스처 문서 본문입니다.</p></body></html>",
     });
   });
-  const completedForArtifacts = completedReview();
+  const completedForArtifacts = customize(completedReview());
   const fixtureReview = completedForArtifacts.run.result.policy_review;
   const alternativeLabels = new Map(fixtureReview.alternatives.map((item) => [item.id, item.label]));
   const mergedPanel = fixtureReview.panel.map((segment) => ({

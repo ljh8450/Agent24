@@ -287,11 +287,12 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
             if isinstance(category, dict):
                 # 플랜 모델이 {code,label} 객체로 주는 경우 — code는 계산용, label은 표시용으로 분리 보존한다.
                 code = str(category.get("code") or category.get("id") or category.get("label") or "").strip()
-                korean = str(category.get("label") or "").strip()
-                if code and korean:
-                    category_labels[code] = korean
-                category = code
-            categories.append(str(category).strip())
+                category_label = str(category.get("label") or code).strip()
+            else:
+                code = str(category).strip()
+                category_label = code
+            categories.append(code)
+            category_labels[code] = category_label
         if not all(categories) or len(set(categories)) != len(categories):
             return None
         variables.append(
@@ -440,11 +441,31 @@ SYNTHETIC_SEGMENT_NAMES = (
 )
 
 
+def labeled_attributes(
+    state: dict[str, str],
+    variable_labels: dict[str, str] | None = None,
+    category_labels: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    variable_labels = variable_labels or {}
+    category_labels = category_labels or {}
+    return [
+        {
+            "variable": variable_labels.get(key, key),
+            "variable_code": key,
+            "value": category_labels.get(key, {}).get(value, value),
+            "code": value,
+            "tag": "model_weighted",
+        }
+        for key, value in state.items()
+    ]
+
+
 def weighted_segments(
     states: list[dict[str, str]],
     distribution: list[float],
     limit: int = 12,
     evidence_level: str = "partial_estimate",
+    variable_labels: dict[str, str] | None = None,
     category_labels: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     # 같은 가중치 셀만 상위에 몰리면 차등 분포가 있어도 균일해 보인다 —
@@ -464,15 +485,7 @@ def weighted_segments(
             "id": f"P{index:02d}",
             "display_name": SYNTHETIC_SEGMENT_NAMES[(index - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
             "avatar": notionists_avatar(f"P{index:02d}"),
-            "attributes": [
-                {
-                    "variable": key,
-                    "value": value,
-                    "value_label": ((category_labels or {}).get(key) or {}).get(value, value),
-                    "tag": "model_weighted",
-                }
-                for key, value in state.items()
-            ],
+            "attributes": labeled_attributes(state, variable_labels, category_labels),
             "weight": float(weight),
             "weight_display": f"{weight * 100:.1f}%",
             "evidence_level": evidence_level,
@@ -484,58 +497,6 @@ def weighted_segments(
         }
         for index, (state, weight) in enumerate(ranked, start=1)
     ]
-
-
-def sampled_segments(
-    states: list[dict[str, str]],
-    distribution: list[float],
-    size: int = 12,
-    evidence_level: str = "partial_estimate",
-    category_labels: dict[str, dict[str, str]] | None = None,
-) -> list[dict[str, Any]]:
-    """Draw a proportional synthetic sample: high-share cells appear multiple times, tiny cells dilute away.
-
-    Deterministic largest-remainder quotas keep the panel composition faithful to the joint
-    distribution, so plain answer counts over the sample ARE the weighted statistics.
-    """
-    total = sum(float(weight) for weight in distribution) or 1.0
-    shares = [max(0.0, float(weight)) / total for weight in distribution]
-    quotas = [share * size for share in shares]
-    counts = [int(quota) for quota in quotas]
-    for index in sorted(range(len(quotas)), key=lambda i: quotas[i] - counts[i], reverse=True)[: size - sum(counts)]:
-        counts[index] += 1
-    boundary = (
-        "표본 구성은 승인된 정량 제약이 없어 균등 시나리오 분포에서 비례 표집한 것입니다. 모집단 추정치가 아닙니다."
-        if evidence_level == "scenario_only"
-        else "표본 구성은 승인된 제약과 선택한 PGM 점모형의 결합분포에서 비례 표집한 것이며 실제 개인이나 대표 표본이 아닙니다."
-    )
-    personas: list[dict[str, Any]] = []
-    for state_index in sorted(range(len(states)), key=lambda i: shares[i], reverse=True):
-        for _ in range(counts[state_index]):
-            position = len(personas) + 1
-            pid = f"P{position:02d}"
-            personas.append(
-                {
-                    "id": pid,
-                    "display_name": SYNTHETIC_SEGMENT_NAMES[(position - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
-                    "avatar": notionists_avatar(pid),
-                    "attributes": [
-                        {
-                            "variable": key,
-                            "value": value,
-                            "value_label": ((category_labels or {}).get(key) or {}).get(value, value),
-                            "tag": "model_weighted",
-                        }
-                        for key, value in states[state_index].items()
-                    ],
-                    "weight": 1.0 / size,
-                    "weight_display": f"{shares[state_index] * 100:.1f}%",
-                    "cell_share": shares[state_index],
-                    "evidence_level": evidence_level,
-                    "boundary": boundary,
-                }
-            )
-    return personas
 
 
 def summarize_panel_interviews(panel: list[dict[str, Any]], interviews: list[dict[str, Any]]) -> dict[str, Any]:
@@ -600,7 +561,10 @@ def policy_brief(
     low_access = [
         item
         for item in panel
-        if any(attr["value"] in {"high", "constrained", "unstable", "none", "seeking"} for attr in item["attributes"])
+        if any(
+            attr.get("code", attr["value"]) in {"high", "constrained", "unstable", "none", "seeking"}
+            for attr in item["attributes"]
+        )
     ]
     return (
         "\n".join(

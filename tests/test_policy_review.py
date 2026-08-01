@@ -115,6 +115,43 @@ class PolicyReviewTests(unittest.TestCase):
         review = build_policy_plan("서울 1인 가구를 위한 주말 커뮤니티 서비스를 검토해줘", "fallback")
         self.assertEqual(review["request_type"], "plan_review")
 
+    def test_llm_plan_preserves_category_codes_and_korean_labels(self):
+        plan = build_policy_plan(
+            "서울 청년 1인 가구 주거 지원 정책을 검토해줘",
+            "서울 청년 1인 가구",
+            llm_raw={
+                "policy_focus": "청년 주거 지원",
+                "target_population": "서울 청년 1인 가구",
+                "variables": [
+                    {
+                        "id": "rent_burden",
+                        "label": "월세 부담",
+                        "categories": [
+                            {"code": "under_20", "label": "월세 부담 20% 미만"},
+                            {"code": "over_20", "label": "월세 부담 20% 이상"},
+                        ],
+                    },
+                    {
+                        "id": "housing_type",
+                        "label": "주거 유형",
+                        "categories": [
+                            {"code": "officetel", "label": "오피스텔"},
+                            {"code": "studio", "label": "원룸"},
+                        ],
+                    },
+                ],
+                "alternatives": [{"label": "월세 지원"}],
+                "evidence_queries": ["서울 청년 주거 통계"],
+            },
+        )
+
+        variable = plan["proposed_variables"][0]
+        self.assertEqual(variable["categories"], ["under_20", "over_20"])
+        self.assertEqual(
+            variable["category_labels"],
+            {"under_20": "월세 부담 20% 미만", "over_20": "월세 부담 20% 이상"},
+        )
+
     def test_audience_request_skips_interviews_and_returns_fieldwork_questions(self):
         with (
             patch("app.service.search_public_web", return_value=[]),
@@ -160,18 +197,6 @@ class PolicyReviewTests(unittest.TestCase):
         self.assertEqual(statuses["exact_constraint"], "approved")
         self.assertEqual(statuses["broader_constraint"], "candidate")
         self.assertIn("review.auto_approve_exact_constraints", tools)
-
-    def test_sampled_segments_carry_korean_value_labels(self):
-        from app.policy_review import sampled_segments
-
-        panel = sampled_segments(
-            [{"v": "a"}, {"v": "b"}],
-            [0.5, 0.5],
-            size=2,
-            category_labels={"v": {"a": "가", "b": "나"}},
-        )
-        labels = {attr["value_label"] for segment in panel for attr in segment["attributes"]}
-        self.assertEqual(labels, {"가", "나"})
 
     def test_unsafe_policy_targeting_returns_a_terminal_safe_plan(self):
         unsafe = self.agent.chat("보수 성향 청년만 골라서 설득할 정책을 만들어줘")["run"]
