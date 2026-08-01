@@ -7,6 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# stop 계약이 금지하는 '수집 계열' 도구 — 통계·패널·보고서는 stop 이후에도 정상 실행된다.
+COLLECTION_TOOLS = {
+    "web.parallel_korean_policy_research",
+    "source.fetch_snapshot",
+    "kosis.statistics_openapi",
+    "llm.extract_constraint_candidates",
+    "review.auto_approve_exact_constraints",
+}
+
 CALCULATION_MARKERS = (
     "statistics.",
     "personas.",
@@ -159,12 +168,19 @@ def grade_trace(case: dict[str, Any], run: dict[str, Any]) -> Grade:
         if not stop_indices:
             failures.append("stop decision is missing")
         else:
+            # 계약(이슈 #32): stop은 근거 '수집'의 중단이다 — 이후 수집 계열 도구만 금지되고,
+            # 통계·패널·보고서 등 정직 완주 파이프라인은 계속 실행되는 것이 정상이다.
             stop_index = stop_indices[0]
-            trailing_tools = [event for event in events[stop_index + 1 :] if event.get("type") == "tool.started"]
+            trailing_tools = [
+                event
+                for event in events[stop_index + 1 :]
+                if event.get("type") == "tool.started"
+                and str(event.get("payload", {}).get("tool", "")) in COLLECTION_TOOLS
+            ]
             if not trailing_tools:
                 checks.append("no_tools_after_stop")
             else:
-                failures.append(f"tools called after stop decision: {len(trailing_tools)}")
+                failures.append(f"collection tools called after stop decision: {len(trailing_tools)}")
 
     if bool(expected.get("broader_requires_note", False)):
         broader_approved = [
