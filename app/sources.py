@@ -121,42 +121,6 @@ def source_trust(url: str) -> tuple[str, str, str]:
     return "unreviewed_web", "web_page", host
 
 
-def korean_source_catalog() -> list[dict[str, str]]:
-    """Human-facing starting points. The returned pages must still be fetched and reviewed."""
-    return [
-        {
-            "label": "KOSIS 국가통계포털",
-            "url": "https://kosis.kr/",
-            "tier": "korean_official",
-            "kind": "official_statistics_or_policy",
-        },
-        {
-            "label": "공공데이터포털",
-            "url": "https://www.data.go.kr/",
-            "tier": "korean_official",
-            "kind": "official_statistics_or_policy",
-        },
-        {
-            "label": "ScienceON 논문",
-            "url": "https://scienceon.kisti.re.kr/",
-            "tier": "korean_research",
-            "kind": "academic_or_policy_research",
-        },
-        {
-            "label": "RISS 학술연구정보",
-            "url": "https://www.riss.kr/",
-            "tier": "korean_research",
-            "kind": "academic_or_policy_research",
-        },
-        {
-            "label": "국회입법조사처",
-            "url": "https://www.nars.go.kr/",
-            "tier": "korean_official",
-            "kind": "official_statistics_or_policy",
-        },
-    ]
-
-
 def _assert_public_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:

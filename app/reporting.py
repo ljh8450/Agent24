@@ -152,16 +152,6 @@ def report_tables(run: dict[str, Any]) -> dict[str, tuple[list[str], list[dict[s
         for item in policy_review.get("panel", [])
     ]
 
-    holdout = result.get("holdout") or {}
-    evaluation = holdout.get("evaluation") or {}
-    holdout_columns = ["항목", "값"]
-    holdout_rows = [
-        {"항목": "예측 봉인 hash", "값": holdout.get("prediction_hash")},
-        {"항목": "Total variation distance", "값": evaluation.get("tv_distance")},
-        {"항목": "실제 관심량", "값": _probability(evaluation.get("actual_estimand"))},
-        {"항목": "식별구간 포함 여부", "값": evaluation.get("interval_covered")},
-    ]
-
     activity_columns = ["도구/이벤트", "상태", "기록 시각"]
     activity_rows = [
         {
@@ -179,7 +169,6 @@ def report_tables(run: dict[str, Any]) -> dict[str, tuple[list[str], list[dict[s
         "policy": (policy_columns, policy_rows),
         "personas": (persona_columns, persona_rows),
         "panel": (panel_columns, panel_rows),
-        "holdout": (holdout_columns, holdout_rows),
         "activity": (activity_columns, activity_rows),
     }
 
@@ -189,8 +178,6 @@ RESPONSE_META = {
     "conditional": ("조건부", "#B07818"),
     "low_change": ("변화 낮음", "#3E6FC4"),
     "decline": ("거절", "#B23A2C"),
-    "neutral": ("중립", "#3E6FC4"),
-    "oppose": ("반대", "#B23A2C"),
 }
 
 
@@ -310,7 +297,6 @@ def render_html_report(run: dict[str, Any]) -> str:
             ("policy", "정책안과 모의 반응"),
             ("personas", "합성 페르소나 표집"),
             ("panel", "가중 가상 시민 패널"),
-            ("holdout", "봉인 홀드아웃 채점"),
         )
     )
     activity_html = _great_table("도구 실행 이력", "실행 재현용 이벤트 로그", *tables["activity"])

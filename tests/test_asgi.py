@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import asgi
-from app.contracts import Source
 from app.service import ResearchAgent
 
 
@@ -89,31 +88,7 @@ class GatewayEndpointTests(unittest.TestCase):
         status, headers, body = asyncio.run(request(method, path, payload, client))
         return status, headers, json.loads(body.decode("utf-8"))
 
-    def add_fixture_source(self, run_id):
-        snapshot = Path(self.temp.name) / "data/source-cache/fixture.txt"
-        snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_text("대전 성인 대학생 정책 관심도 조사 원문", encoding="utf-8")
-        asgi.agent.store.add_source(
-            run_id,
-            Source(
-                "src_api_fixture",
-                "https://kosis.kr/table",
-                "fixture table",
-                "KOSIS",
-                "fixture survey",
-                "2025",
-                "2025",
-                "adult students",
-                1000,
-                "fixture-hash",
-                "data/source-cache/fixture.txt",
-                trust_tier="korean_official",
-                source_kind="official_statistics_or_policy",
-                source_domain="kosis.kr",
-            ).as_dict(),
-        )
-
-    def test_gateway_auth_catalog_and_full_endpoint_flow(self):
+    def test_gateway_auth_and_core_endpoints(self):
         status, _, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(health["status"], "ok")
@@ -123,9 +98,6 @@ class GatewayEndpointTests(unittest.TestCase):
         status, cors_headers, _ = asyncio.run(request("OPTIONS", "/api/health"))
         self.assertEqual(status, 204)
         self.assertEqual(cors_headers["access-control-allow-methods"], "GET,POST,OPTIONS")
-        status, _, catalog = self.call("GET", "/api/source-catalog")
-        self.assertEqual(status, 200)
-        self.assertIn("KOSIS 국가통계포털", [item["label"] for item in catalog["sources"]])
 
         status, _, started = self.call("POST", "/api/chat", {"text": "대전 성인 대학생의 정책 관심을 조사해줘"})
         self.assertEqual(status, 201)
@@ -134,178 +106,11 @@ class GatewayEndpointTests(unittest.TestCase):
         status, _, retrieved = self.call("GET", f"/api/runs/{run_id}")
         self.assertEqual(status, 200)
         self.assertEqual(retrieved["id"], run_id)
-        status, _, planned = self.call("POST", f"/api/runs/{run_id}/policy/plan", {})
-        self.assertEqual(status, 200)
-        self.assertIn("alternatives", planned["plan"])
-        with patch(
-            "app.service.search_public_web",
-            return_value=[
-                {
-                    "title": "KOSIS 정책 후보",
-                    "url": "https://kosis.kr/policy",
-                    "domain": "kosis.kr",
-                    "trust_tier": "korean_official",
-                    "source_kind": "official_statistics_or_policy",
-                }
-            ],
-        ):
-            status, _, autonomous_search = self.call("POST", f"/api/runs/{run_id}/policy/research", {})
-        self.assertEqual(status, 200)
-        self.assertEqual(autonomous_search["results"][0]["domain"], "kosis.kr")
-
-        schema = {
-            "variables": [
-                {"id": "region", "categories": ["daejeon", "other"]},
-                {"id": "interest", "categories": ["high", "low"]},
-            ]
-        }
-        status, _, schema_result = self.call("POST", f"/api/runs/{run_id}/schema", schema)
-        self.assertEqual(status, 200)
-        self.assertEqual(len(schema_result["variables"]), 2)
-        with patch(
-            "app.service.search_public_web",
-            return_value=[
-                {
-                    "title": "KOSIS 후보",
-                    "url": "https://kosis.kr/index/index.do",
-                    "domain": "kosis.kr",
-                    "trust_tier": "korean_official",
-                    "source_kind": "official_statistics_or_policy",
-                }
-            ],
-        ):
-            status, _, source_search = self.call(
-                "POST",
-                f"/api/runs/{run_id}/sources/search",
-                {"query": "대전 학생 통계", "trusted_korean_only": True},
-            )
-        self.assertEqual(status, 200)
-        self.assertEqual(source_search["results"][0]["domain"], "kosis.kr")
-        self.add_fixture_source(run_id)
-        with patch(
-            "app.service.fetch_source",
-            return_value=Source(
-                "src_fetch_fixture",
-                "https://kosis.kr/fetch",
-                "fetched fixture",
-                "KOSIS",
-                "fetched survey",
-                "2025",
-                "2025",
-                "adult students",
-                10,
-                "fetched-hash",
-                "data/source-cache/fetched.txt",
-            ),
-        ):
-            status, _, fetched = self.call(
-                "POST",
-                f"/api/runs/{run_id}/sources/fetch",
-                {"url": "https://kosis.kr/fetch", "metadata": {}},
-            )
-        self.assertEqual(status, 201)
-        self.assertEqual(fetched["id"], "src_fetch_fixture")
-        with patch("app.personas._configured_llm", return_value=None):
-            status, _, extraction_error = self.call("POST", f"/api/runs/{run_id}/sources/src_api_fixture/extract", {})
-        self.assertEqual(status, 400)
-        self.assertEqual(extraction_error["error"]["code"], "LLM_NOT_CONFIGURED")
-
-        for identifier, where, value in (
-            ("region", {"region": "daejeon"}, 0.2),
-            ("interest", {"interest": "high"}, 0.5),
-        ):
-            status, _, _ = self.call(
-                "POST",
-                f"/api/runs/{run_id}/constraints",
-                {
-                    "id": identifier,
-                    "source_id": "src_api_fixture",
-                    "label": identifier,
-                    "where": where,
-                    "relation": "eq",
-                    "value": value,
-                    "population_compatibility": "exact",
-                    "raw_statement": "fixture",
-                },
-            )
-            self.assertEqual(status, 201)
-        status, _, _ = self.call(
-            "POST",
-            f"/api/runs/{run_id}/constraints/approve",
-            {"constraint_ids": ["region", "interest"], "override_notes": {}},
-        )
-        self.assertEqual(status, 200)
-        status, _, computed = self.call(
-            "POST",
-            f"/api/runs/{run_id}/compute",
-            {"estimand": {"numerator": {"interest": "high"}, "denominator": {"region": "daejeon"}}},
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(computed["result"]["status"], "feasible")
-        self.assertIn(
-            "statistics.identification_bounds",
-            [event["payload"].get("tool") for event in computed["events"]],
-        )
-        status, _, sampled = self.call(
-            "POST",
-            f"/api/runs/{run_id}/personas",
-            {"adult_population_confirmed": True, "count": 3, "seed": 7},
-        )
-        self.assertEqual(status, 200)
-        personas = sampled["result"]["personas"]["items"]
-        self.assertEqual(len(personas), 3)
-        status, _, persona_answer = self.call(
-            "POST",
-            f"/api/runs/{run_id}/persona-chat",
-            {
-                "persona_id": personas[0]["id"],
-                "question": "어느 지역에 속하나요?",
-                "allowed_variable": "region",
-            },
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(persona_answer["status"], "answered_sampled_attribute")
-        with patch.dict("os.environ", {"PERSONA_RESTORER_DEMO_MODEL": "1"}):
-            status, _, narrated = self.call("POST", f"/api/runs/{run_id}/narratives", {})
-        self.assertEqual(status, 200)
-        self.assertEqual(len(narrated["result"]["personas"]["narratives"]), 3)
-        with patch.dict("os.environ", {"PERSONA_RESTORER_DEMO_MODEL": "1"}):
-            status, _, panel_review = self.call("POST", f"/api/runs/{run_id}/policy/panel-review", {})
-        self.assertEqual(status, 200)
-        self.assertEqual(len(panel_review["result"]["policy_review"]["alternatives"]), 3)
-        with patch.dict("os.environ", {"PERSONA_RESTORER_DEMO_MODEL": "1"}):
-            status, _, surveyed = self.call(
-                "POST", f"/api/runs/{run_id}/survey", {"policy_question": "청년 주거 지원을 확대해야 하나요?"}
-            )
-        self.assertEqual(status, 200)
-        self.assertEqual(surveyed["result"]["survey"]["mode"], "deterministic_demo")
-        status, _, sealed = self.call("POST", f"/api/runs/{run_id}/holdout/seal", {})
-        self.assertEqual(status, 200)
-        status, _, evaluated = self.call(
-            "POST",
-            f"/api/runs/{run_id}/holdout/evaluate",
-            {"actual_distribution": sealed["result"]["distribution"]},
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(evaluated["result"]["holdout"]["evaluation"]["tv_distance"], 0.0)
-
-        status, _, report = self.call("POST", f"/api/runs/{run_id}/report", {})
-        self.assertEqual(status, 200)
-        self.assertEqual(report["run"]["status"], "completed")
-        status, headers, html = asyncio.run(request("GET", report["report_url"]))
-        self.assertEqual(status, 200)
-        self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
-        self.assertIn(b'class="gt_table"', html)
-        self.assertIn("정책 사전검증 브리프".encode(), html)
-        status, json_headers, manifest = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/run.json"))
-        self.assertEqual(status, 200)
-        self.assertEqual(json_headers["content-type"], "application/json; charset=utf-8")
-        self.assertEqual(json.loads(manifest)["id"], run_id)
-        self.assertEqual(set(report["downloads"]), {"panel", "interviews", "evidence"})
-        for url in report["downloads"].values():
-            status, _, artifact = asyncio.run(request("GET", url))
-            self.assertEqual(status, 200)
-            self.assertTrue(artifact)
+        # 수동 연구 엔드포인트는 제거됨: 남은 API는 kosis/data-go 커넥터뿐이다.
+        for removed in ("compute", "personas", "survey", "holdout/seal", "policy/plan", "report"):
+            status, _, response = self.call("POST", f"/api/runs/{run_id}/{removed}", {})
+            self.assertEqual(status, 404, removed)
+            self.assertEqual(response["error"]["code"], "NOT_FOUND")
 
     def test_kosis_route_fails_closed_without_configured_key(self):
         status, _, started = self.call("POST", "/api/chat", {"text": "대전 인구 통계를 KOSIS로 조사해줘"})
