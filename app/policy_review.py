@@ -660,6 +660,13 @@ def policy_brief(
     )
     preferred_id = ranked[0][0] if ranked else None
     preferred = alternatives.get(preferred_id) if preferred_id else None
+    # 대안이 하나뿐인 검토에서 "상위 대안"을 언급하면 보고서가 존재하지 않는 선택지를 암시한다.
+    if len(plan["alternatives"]) > 1:
+        verdict_line = "가상 패널 모의 인터뷰 기준으로는 정책안 단독 확정보다, 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다."
+        comparison_line = "검토 요청안 / 상위 대안 / 지원 없음 또는 기존 서비스"
+    else:
+        verdict_line = "가상 패널 모의 인터뷰 기준으로는 이 정책안을 바로 확정하기보다, 소규모 시범사업으로 실제 반응을 확인할 것을 권장합니다."
+        comparison_line = "검토 요청안 / 지원 없음 또는 기존 서비스"
     low_access = [
         item
         for item in panel
@@ -675,7 +682,7 @@ def policy_brief(
                 "",
                 f"## 대상\n{plan['target_population']}",
                 "",
-                "## 판정\n가상 패널 모의 인터뷰 기준으로는 요청받은 정책안 단독 확정보다, 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
+                "## 판정\n" + verdict_line,
                 "",
                 *([insights.replace("### ", "## "), ""] if insights else []),
                 "## 우선 검토안\n"
@@ -707,7 +714,9 @@ def policy_brief(
                     else "현재 PGM 변수만으로 사각지대를 특정할 수 없습니다. 추가 교차표와 실제 인터뷰가 필요합니다."
                 ),
                 "",
-                "## 현실 검증 계획\n- 기간: 4주 소규모 시범\n- 비교: 검토 요청안 / 상위 대안 / 지원 없음 또는 기존 서비스\n- 지표: 신규 참여, 실제 사용, 기존 이용자 집중도, 지역·정보 접근 격차, 재이용\n- 수집: 사전 등록한 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
+                "## 현실 검증 계획\n- 기간: 4주 소규모 시범\n- 비교: "
+                + comparison_line
+                + "\n- 지표: 신규 참여, 실제 사용, 기존 이용자 집중도, 지역·정보 접근 격차, 재이용\n- 수집: 사전 등록한 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
                 "",
                 "> 이 문서는 통계 기반 가상 패널의 모의 인터뷰입니다. 실제 시민의 찬성률·행동·정책 효과가 아닙니다.",
             ]
