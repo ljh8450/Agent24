@@ -393,7 +393,7 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
     alternatives = [
         {
             "id": "original",
-            "label": "원안",
+            "label": "원안 (입력한 정책)",
             "description": question,
             "hypothesis": "원안의 수혜 분포와 접근 장벽을 가상 패널에서 비교합니다.",
             "risk": "실제 시민 반응이나 인과효과를 뜻하지 않습니다.",
