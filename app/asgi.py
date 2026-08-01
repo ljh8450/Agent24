@@ -141,6 +141,10 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
     body = await _payload(receive)
     text = str(body.get("text", ""))
     session_id = str(body.get("session_id", "") or "")
+    attachment = body.get("attachment")
+    attachment_text = ""
+    if isinstance(attachment, dict):
+        attachment_text = str(attachment.get("text", ""))[:100_000]  # 서버측 캡
     headers = [
         (b"content-type", b"text/event-stream; charset=utf-8"),
         (b"cache-control", b"no-cache, no-transform"),
@@ -150,10 +154,14 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
     # LLM 분류·플랜 호출 전에 헤더부터 흘려보낸다 — 프록시 타임아웃과 무응답 UI를 막는다.
     await send({"type": "http.response.start", "status": 201, "headers": headers})
     await _send_sse(send, "stream.open", {})
-    try:
-        intent = await asyncio.to_thread(agent.classify_intent, session_id, text)
-    except Exception:
+    if attachment_text.strip():
+        # 기획서를 첨부했다는 것 자체가 검토 요청이다 — 분류 호출 생략.
         intent = "policy_review"
+    else:
+        try:
+            intent = await asyncio.to_thread(agent.classify_intent, session_id, text)
+        except Exception:
+            intent = "policy_review"
     if intent in ("conversation", "clarify"):
         await _send_sse(send, "chat.accepted", {"mode": intent})
         # Real token streaming: the worker thread reads the model's SSE and relays every delta immediately.
@@ -208,7 +216,7 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
     try:
-        created = await asyncio.to_thread(agent.chat, text, body.get("event_id"))
+        created = await asyncio.to_thread(agent.chat, text, body.get("event_id"), attachment_text or None)
     except DomainError as error:
         await _send_sse(send, "error", {"code": error.code, "message": error.message, "details": error.details})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
@@ -346,7 +354,12 @@ async def _dispatch(method: str, path: str, receive: Any) -> tuple[int, bytes, s
         return _json(200, {"deleted": session_id})
     if method == "POST" and path == "/api/chat":
         body = await _payload(receive)
-        return _json(201, await asyncio.to_thread(agent.chat, str(body.get("text", "")), body.get("event_id")))
+        attachment = body.get("attachment")
+        attachment_text = str(attachment.get("text", ""))[:100_000] if isinstance(attachment, dict) else None
+        return _json(
+            201,
+            await asyncio.to_thread(agent.chat, str(body.get("text", "")), body.get("event_id"), attachment_text),
+        )
     if method == "POST" and path == "/api/agent/review":
         body = await _payload(receive)
         return _json(
@@ -355,6 +368,11 @@ async def _dispatch(method: str, path: str, receive: Any) -> tuple[int, bytes, s
                 agent.autonomous_review,
                 str(body.get("text", "")),
                 body.get("event_id"),
+                (
+                    str(body["attachment"].get("text", ""))[:100_000]
+                    if isinstance(body.get("attachment"), dict)
+                    else None
+                ),
             ),
         )
     if method == "GET" and path.startswith("/api/avatars/notionists/") and path.endswith(".svg"):

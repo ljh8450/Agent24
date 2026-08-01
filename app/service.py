@@ -204,7 +204,9 @@ class ResearchAgent:
                 self.remember_turn(session_id, "user", text)
                 self.remember_turn(session_id, "agent", reply)
 
-    def chat(self, text: str, client_event_id: str | None = None) -> dict[str, Any]:
+    def chat(
+        self, text: str, client_event_id: str | None = None, attachment_text: str | None = None
+    ) -> dict[str, Any]:
         question = " ".join(text.split())
         if len(question) < 4:
             raise DomainError("QUESTION_TOO_SHORT", "대상 집단과 알고 싶은 정책/질문을 조금 더 구체적으로 입력하세요.")
@@ -220,10 +222,14 @@ class ResearchAgent:
         }
         stored = self.store.create_run(run, client_event_id)
         self.store.append_event(stored["id"], "tool.completed", {"tool": "agent.intake_question"})
+        if attachment_text:
+            self.store.append_event(
+                stored["id"], "attachment.received", {"kind": "markdown", "chars": len(attachment_text)}
+            )
         llm_raw = None
         if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") != "1":
             try:
-                llm_raw = llm_policy_plan(question)
+                llm_raw = llm_policy_plan(question, attachment_text=attachment_text)
             except DomainError:
                 llm_raw = None
         plan = build_policy_plan(question, target, llm_raw=llm_raw)
@@ -267,13 +273,15 @@ class ResearchAgent:
             "message": message,
         }
 
-    def autonomous_review(self, text: str, client_event_id: str | None = None) -> dict[str, Any]:
+    def autonomous_review(
+        self, text: str, client_event_id: str | None = None, attachment_text: str | None = None
+    ) -> dict[str, Any]:
         """Execute the user-facing policy workflow from one chat message.
 
         Missing quantitative evidence is a completed, explicit scenario-only result;
         it never becomes a fabricated public statistic or a silent approval request.
         """
-        created = self.chat(text, client_event_id)
+        created = self.chat(text, client_event_id, attachment_text=attachment_text)
         return self.continue_autonomous_review(created["run"]["id"], created["message"])
 
     def continue_autonomous_review(self, run_id: str, intake_message: str | None = None) -> dict[str, Any]:
@@ -519,6 +527,13 @@ class ResearchAgent:
                 "covered_variables": [identifier for identifier in variable_ids if identifier not in uncovered],
                 "uncovered_variables": uncovered,
                 "candidate_count": len(constraints),
+                # 변수별 후보 수 — 결정 모델이 '어느 변수가 진짜 비었는지' 보고 승인/수집을 고르게 한다.
+                "candidates_by_variable": {
+                    identifier: sum(
+                        1 for item in constraints if identifier in (item.get("where") or {})
+                    )
+                    for identifier in variable_ids
+                },
                 "broader_candidates": sum(
                     1
                     for item in constraints

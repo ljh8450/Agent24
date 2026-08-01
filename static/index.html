@@ -40,8 +40,9 @@
                   <section id="stream-tail" aria-live="polite"></section>
                 </div>
               </div>
+              <div id="attach-chip" class="attach-chip" hidden><span id="attach-name"></span><button type="button" id="attach-remove" aria-label="첨부 제거">×</button></div>
               <form id="chat-form" class="chatgpt-composer" data-testid="research-composer">
-                <button class="chatgpt-composer-attach" type="button" aria-label="참고 자료 추가" title="참고 자료 추가">＋</button>
+                <input type="file" id="attach-input" accept=".md,text/markdown" class="sr-only" aria-hidden="true" tabindex="-1"><button class="chatgpt-composer-attach" id="attach-button" type="button" aria-label="정책 기획서(.md) 첨부" title="정책 기획서(.md) 첨부">＋</button>
                 <div class="composer-input-shell"><label class="sr-only" for="chat-input">검토할 정책 의도</label><textarea id="chat-input" data-testid="question-input" required aria-describedby="composer-help" placeholder="정책 목표, 대상, 지역, 기간 또는 예산을 입력하세요" rows="1"></textarea></div>
                 <button class="chatgpt-composer-send" type="submit" data-testid="start-research" aria-label="정책 검토 시작">↑</button>
               </form>
