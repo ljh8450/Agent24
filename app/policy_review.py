@@ -281,7 +281,12 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
             return None
         if not isinstance(categories_raw, list) or not 2 <= len(categories_raw) <= 4:
             return None
-        categories = [str(category).strip() for category in categories_raw]
+        categories = []
+        for category in categories_raw:
+            if isinstance(category, dict):
+                # 플랜 모델이 {code,label} 객체로 주는 경우 — str(dict)로 삼키면 하류 전체가 오염된다.
+                category = category.get("code") or category.get("id") or category.get("label") or ""
+            categories.append(str(category).strip())
         if not all(categories) or len(set(categories)) != len(categories):
             return None
         variables.append({"id": var_id, "label": label, "categories": categories})

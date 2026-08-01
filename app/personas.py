@@ -457,6 +457,8 @@ def extract_constraint_candidates(
             "where must be a JSON object that maps exactly one allowed variable id to one of that variable's allowed categories — never a bare string and never raw table field names such as C1, C2, ITM_NM or OBJ_NM.\n"
             f"Allowed where keys and categories (use EXACTLY these spellings): {json.dumps(allowed, ensure_ascii=False)}\n"
             "source_categories must be a JSON object mapping the source table's own label to the mapped project category. "
+            "When the excerpt uses the compact table form 'PRD_DE | 분류 | 항목 = 값 단위', each line is one published cell; "
+            "a '%' unit means divide the value by 100 for the 0..1 constraint value. "
             "When the same measure is published for multiple periods, keep only the most recent period and drop the older ones. "
             "If a number cannot be mapped onto an allowed variable/category, omit that candidate rather than guessing. "
             "All candidates are proposals for human review, not facts.\n"

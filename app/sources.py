@@ -484,6 +484,29 @@ def fetch_data_go_api(root: Path, payload: dict[str, object]) -> Source:
     )
 
 
+def _compact_kosis_rows(content: str) -> str | None:
+    """KOSIS OpenAPI 원시 행 JSON을 셀당 한 줄로 압축한다.
+
+    원시 형식은 행마다 영문 중복 필드가 붙어 12,000자 예산에 행 몇 개밖에 못 담는다.
+    'PRD_DE | 분류 | 항목 = 값 단위' 형태면 같은 예산에 표 전체가 들어간다.
+    """
+    try:
+        rows = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict) or "DT" not in rows[0]:
+        return None
+    lines = [str(rows[0].get("TBL_NM", ""))]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        classifiers = " > ".join(str(row[key]) for key in ("C1_NM", "C2_NM", "C3_NM", "C4_NM") if row.get(key))
+        lines.append(
+            f"{row.get('PRD_DE', '')} | {classifiers} | {row.get('ITM_NM', '')} = {row.get('DT', '')} {row.get('UNIT_NM', '')}".strip()
+        )
+    return "\n".join(lines)
+
+
 def source_excerpt(root: Path, source: dict[str, object], maximum_characters: int = 12000) -> str:
     root = root.resolve()
     relative = Path(str(source["snapshot_path"]))
@@ -491,6 +514,10 @@ def source_excerpt(root: Path, source: dict[str, object], maximum_characters: in
     if root not in candidate.parents or not candidate.is_file():
         raise DomainError("SOURCE_ARTIFACT_MISSING", "출처 스냅샷 파일을 찾을 수 없습니다.")
     content = candidate.read_text(encoding="utf-8", errors="replace")
+    if str(source.get("source_kind", "")).endswith("openapi"):
+        compact = _compact_kosis_rows(content)
+        if compact:
+            return compact[:maximum_characters]
     # Raw HTML wastes the excerpt budget on markup and scripts; keep the visible text so
     # the numbers a statistics page publishes actually reach the extraction model.
     if "<html" in content[:2000].lower() or "<!doctype" in content[:200].lower() or "</div>" in content:

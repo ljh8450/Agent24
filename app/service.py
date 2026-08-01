@@ -649,12 +649,15 @@ class ResearchAgent:
             )
             return
         accepted = 0
+        rejected = 0
         with ThreadPoolExecutor(max_workers=min(3, max(1, len(sources)))) as executor:
             futures = {executor.submit(self.extract_candidates, run_id, source["id"]): source for source in sources}
             for future in as_completed(futures):
                 source = futures[future]
                 try:
-                    accepted += len(future.result()["candidates"])
+                    result = future.result()
+                    accepted += len(result["candidates"])
+                    rejected += int(result.get("rejected_count", 0))
                 except DomainError as error:
                     self.store.append_event(
                         run_id,
@@ -664,7 +667,12 @@ class ResearchAgent:
         self.store.append_event(
             run_id,
             "tool.completed",
-            {"tool": "llm.extract_constraint_candidates", "accepted_candidates": accepted},
+            {
+                "tool": "llm.extract_constraint_candidates",
+                "accepted_candidates": accepted,
+                "rejected_candidates": rejected,
+                "outcome": "no_candidates_from_model" if accepted == 0 and rejected == 0 else "completed",
+            },
         )
 
     def _autonomous_evidence_gate(self, run_id: str, allow_broader: bool = False) -> list[str]:
@@ -879,23 +887,45 @@ class ResearchAgent:
             raise DomainError("MISSING_SOURCE", "이 run에 저장된 source_id만 추출할 수 있습니다.")
         candidates = extract_constraint_candidates(source, run["variables"], source_excerpt(self.root, source))
         accepted: list[dict[str, Any]] = []
+        rejected: list[dict[str, str]] = []
         variables = [Variable.parse(item) for item in run["variables"]]
         for candidate in candidates:
+            if not isinstance(candidate, dict):
+                rejected.append({"label": str(candidate)[:60], "code": "NOT_AN_OBJECT"})
+                continue
             candidate["source_id"] = source_id
             candidate["review_status"] = "candidate"
             try:
                 constraint = Constraint.parse(candidate, variables)
-            except DomainError:
+            except DomainError as error:
+                rejected.append(
+                    {
+                        "label": str(candidate.get("label", ""))[:60],
+                        "code": error.code,
+                        "where": json.dumps(candidate.get("where"), ensure_ascii=False)[:120],
+                    }
+                )
                 continue
             self.store.add_constraint(run_id, constraint.as_dict())
             accepted.append(constraint.as_dict())
+        if rejected:
+            # 어디서 죽는지 트레이스에 남긴다 — 후보 0건의 원인 조사가 이 이벤트 하나로 끝나야 한다.
+            self.store.append_event(
+                run_id, "constraint.candidate_rejected", {"source_id": source_id, "rejected": rejected[:10]}
+            )
         self.store.append_event(
             run_id,
             "constraint.extraction_completed",
-            {"source_id": source_id, "accepted_candidate_count": len(accepted)},
+            {
+                "source_id": source_id,
+                "accepted_candidate_count": len(accepted),
+                "rejected_candidate_count": len(rejected),
+                "model_candidate_count": len(candidates),
+            },
         )
         return {
             "candidates": accepted,
+            "rejected_count": len(rejected),
             "warning": "모델이 제안한 후보입니다. 수치·범주 매핑·모집단을 사람이 검토하고 승인해야만 계산에 사용됩니다.",
         }
 
