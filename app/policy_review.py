@@ -222,7 +222,8 @@ def _target(question: str, fallback: str) -> tuple[str, list[dict[str, str]]]:
 
 
 AUDIENCE_TERMS = ("페르소나", "알고 싶", "이해하", "누구인지", "특성을 파악")
-PLAN_REVIEW_TERMS = ("검토", "정책안", "기획안", "평가", "개선안")
+# "반응·수용"을 물으면 페르소나 언급이 있어도 모의 인터뷰가 필요한 검토 요청이다.
+PLAN_REVIEW_TERMS = ("검토", "정책안", "기획안", "기획하", "평가", "개선안", "반응", "수용")
 
 
 def _request_type(question: str) -> str:
