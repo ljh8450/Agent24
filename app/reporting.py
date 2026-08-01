@@ -439,8 +439,10 @@ def render_html_report(run: dict[str, Any]) -> str:
 {_policy_brief_html(review, plan)}
 {f'<p class="callout warn">{escape(_text(review.get("warning")))}</p>' if review.get("warning") else ""}
 </section>
-<section><h2><span>2</span>정책안별 반응 분포</h2>{_stacked_bars_html(review)}</section>
-<section><h2><span>3</span>종합 인사이트</h2>{insights_html}</section>
+<section><h2><span>2</span>종합 인사이트 · 다음 실측 우선순위</h2>{insights_html}</section>
+<section><h2><span>3</span>정책안별 반응 분포</h2>
+<p class="callout">이 분포는 실측 대상을 고르기 위한 가설 신호입니다 — 실제 찬성률이 아니며 절대 수치로 해석하지 마세요.</p>
+{_stacked_bars_html(review)}</section>
 <section><h2><span>4</span>표본 구성과 근거</h2>
 {_constraints_table_html(run)}
 {_panel_table_html(panel)}
