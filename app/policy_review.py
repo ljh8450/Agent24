@@ -355,7 +355,7 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
     if len({item["id"] for item in variables}) != len(variables):
         return None
     alternatives_raw = raw.get("alternatives")
-    if not isinstance(alternatives_raw, list) or not 1 <= len(alternatives_raw) <= 3:
+    if not isinstance(alternatives_raw, list) or len(alternatives_raw) > 3:
         return None
     alternatives: list[tuple[str, str, str]] = []
     for item in alternatives_raw:
@@ -438,7 +438,10 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
             }
             for item in theme["variables"]
         ]
-        alternative_tuples = theme["alternatives"]
+        # 사용자가 비교를 요구하지 않았으면 템플릿 대안을 발명하지 않는다 — 요청한 정책만 조사한다.
+        alternative_tuples = (
+            theme["alternatives"] if _contains_any(question, ("대안", "비교", "다른 방", "말고")) else []
+        )
         interview_questions = DEFAULT_INTERVIEW_QUESTIONS
         rights_review = theme.get("rights_review")
         queries = [

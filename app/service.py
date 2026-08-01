@@ -216,7 +216,11 @@ class ResearchAgent:
                 self.remember_turn(session_id, "agent", reply)
 
     def chat(
-        self, text: str, client_event_id: str | None = None, attachment_text: str | None = None
+        self,
+        text: str,
+        client_event_id: str | None = None,
+        attachment_text: str | None = None,
+        prior_context: str | None = None,
     ) -> dict[str, Any]:
         question = " ".join(text.split())
         if len(question) < 4:
@@ -240,7 +244,7 @@ class ResearchAgent:
         llm_raw = None
         if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") != "1":
             try:
-                llm_raw = llm_policy_plan(question, attachment_text=attachment_text)
+                llm_raw = llm_policy_plan(question, attachment_text=attachment_text, prior_context=prior_context)
             except DomainError:
                 llm_raw = None
         plan = build_policy_plan(question, target, llm_raw=llm_raw)
