@@ -273,14 +273,28 @@ def _constraints_table_html(run: dict[str, Any]) -> str:
 def _panel_table_html(panel: list) -> str:
     if not panel:
         return ""
-    rows = "".join(
-        f"<tr><td>{escape(_persona_name(segment))}</td><td>"
-        + escape(" · ".join(_text(attr.get("value")) for attr in segment.get("attributes", [])))
-        + f"</td><td>{escape(_text(segment.get('weight_display')))}</td></tr>"
-        for segment in panel
-    )
+    # 같은 셀에서 비례 표집된 중복 인물은 한 줄로 묶는다 — 표의 정보량은 셀 단위가 전부다.
+    grouped: dict[tuple, dict] = {}
+    for segment in panel:
+        signature = tuple(
+            (attr.get("variable"), attr.get("value")) for attr in segment.get("attributes", [])
+        )
+        entry = grouped.setdefault(signature, {"segment": segment, "names": []})
+        entry["names"].append(_persona_name(segment))
+    rows = ""
+    for entry in grouped.values():
+        segment = entry["segment"]
+        names = entry["names"]
+        display = names[0] + (f" 외 {len(names) - 1}명" if len(names) > 1 else "")
+        rows += (
+            f"<tr><td>{escape(display)}</td><td>"
+            + escape(
+                " · ".join(_text(attr.get("value_label") or attr.get("value")) for attr in segment.get("attributes", []))
+            )
+            + f"</td><td>{escape(_text(segment.get('weight_display')))}</td><td>{len(names)}명</td></tr>"
+        )
     return (
-        '<div class="table-wrap"><table><tr><th>가상 인물</th><th>표집된 속성</th><th>세그먼트 비중</th></tr>'
+        '<div class="table-wrap"><table><tr><th>가상 인물</th><th>표집된 속성</th><th>세그먼트 비중</th><th>표본 인원</th></tr>'
         + rows
         + "</table></div>"
     )
@@ -378,7 +392,7 @@ def render_html_report(run: dict[str, Any]) -> str:
     if omitted:
         omitted_rows = "".join(
             "<tr><td>"
-            + escape(" · ".join(_text(attr.get("value")) for attr in cell.get("attributes", [])))
+            + escape(" · ".join(_text(attr.get("value_label") or attr.get("value")) for attr in cell.get("attributes", [])))
             + f"</td><td>{float(cell.get('share', 0)) * 100:.1f}%</td></tr>"
             for cell in omitted
         )

@@ -158,7 +158,7 @@ def synthesize_policy_insights(
             "id": segment["id"],
             "name": segment.get("display_name") or segment["id"],
             "weight": segment.get("weight_display"),
-            "attributes": {item["variable"]: item["value"] for item in segment.get("attributes", [])},
+            "attributes": {item["variable"]: item.get("value_label") or item["value"] for item in segment.get("attributes", [])},
         }
         for segment in panel
     ]
@@ -357,10 +357,11 @@ def llm_policy_plan(question: str) -> dict[str, Any]:
     """Ask the configured model to design question-specific, statistics-measurable plan pieces."""
     preview = _published_table_preview(question)
     preview_block = (
-        "REAL published KOSIS tables found for this question (ground your design in what actually exists): "
-        "design each variable so its categories are plausibly published by one of these tables, and prefer "
-        "kosis_search_terms naming these surveys/tables. Do not invent variables whose concept appears in none of them "
-        "unless the question makes it unavoidable.\n"
+        "REAL published KOSIS tables found for this question — treat this list as your MENU, not a hint: "
+        "every variable MUST be anchored to one listed table (pick the measure that table publishes, name the anchor "
+        "table in that variable's evidence_query, and align kosis_search_terms with the anchoring surveys). "
+        "You may invent at most ONE variable without an anchor, and only when fewer than 3 listed tables fit the "
+        "question; say so in assumptions when you do.\n"
         f"Published tables: {json.dumps(preview, ensure_ascii=False)}\n"
         if preview
         else ""
@@ -391,7 +392,7 @@ def narrate_panel_segments(panel: list[dict[str, Any]], focus: str | None) -> di
         {
             "id": segment["id"],
             "weight": segment.get("weight_display"),
-            "attributes": {item["variable"]: item["value"] for item in segment.get("attributes", [])},
+            "attributes": {item["variable"]: item.get("value_label") or item["value"] for item in segment.get("attributes", [])},
         }
         for segment in panel
     ]
@@ -674,7 +675,7 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
         {
             "id": segment["id"],
             "weight": segment["weight_display"],
-            "attributes": {item["variable"]: item["value"] for item in segment["attributes"]},
+            "attributes": {item["variable"]: item.get("value_label") or item["value"] for item in segment["attributes"]},
         }
         for segment in panel
     ]
