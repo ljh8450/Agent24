@@ -1,6 +1,18 @@
 import { expect, test } from "@playwright/test";
 import { submitPolicy } from "./fixtures.mjs";
 
+test("sidebar toggle collapses and expands the desktop navigation", async ({ page }) => {
+  await page.goto("/");
+  const shell = page.getByTestId("app-shell");
+  const toggle = page.getByRole("button", { name: "사이드바 접기" });
+  await toggle.click();
+  await expect(shell).toHaveClass(/is-sidebar-collapsed/);
+  await expect(page.getByRole("button", { name: "사이드바 펼치기" })).toHaveAttribute("aria-expanded", "false");
+  await page.getByRole("button", { name: "사이드바 펼치기" }).click();
+  await expect(shell).not.toHaveClass(/is-sidebar-collapsed/);
+  await expect(page.getByRole("button", { name: "사이드바 접기" })).toHaveAttribute("aria-expanded", "true");
+});
+
 test("one policy sentence completes the agent workflow without manual controls", async ({ page }) => {
   await submitPolicy(page);
   await expect(page.getByText("검토 완료", { exact: true })).toBeVisible();

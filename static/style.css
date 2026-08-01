@@ -292,3 +292,18 @@ aside.study-inspector { display:none !important; }
   *, *::before, *::after { scroll-behavior:auto !important; transition-duration:.01ms !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; }
 }
 
+@media (min-width:901px) {
+  .workbench-sidebar { transition:flex-basis var(--duration-normal) var(--ease-standard),width var(--duration-normal) var(--ease-standard); }
+  .workbench-shell.is-sidebar-collapsed .workbench-sidebar { flex-basis:64px; width:64px; }
+  .workbench-shell.is-sidebar-collapsed .sidebar-header { justify-content:center; padding:12px 8px; }
+  .workbench-shell.is-sidebar-collapsed .product-brand { padding:0; }
+  .workbench-shell.is-sidebar-collapsed .product-brand strong,
+  .workbench-shell.is-sidebar-collapsed .new-study-button span:last-child,
+  .workbench-shell.is-sidebar-collapsed .sidebar-label,
+  .workbench-shell.is-sidebar-collapsed .study-filter,
+  .workbench-shell.is-sidebar-collapsed .project-list,
+  .workbench-shell.is-sidebar-collapsed .sidebar-bottom { display:none; }
+  .workbench-shell.is-sidebar-collapsed .sidebar-actions { padding:10px 12px; }
+  .workbench-shell.is-sidebar-collapsed .new-study-button { justify-content:center; padding:0; }
+}
+
