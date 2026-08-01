@@ -242,6 +242,26 @@ def _target(question: str, fallback: str) -> tuple[str, list[dict[str, str]]]:
     return " · ".join(labels) if labels else fallback, assumptions
 
 
+# 키워드 템플릿 변수용 공용 범주 라벨 — 폴백 플랜에서도 화면에 영어 코드가 새지 않게 한다.
+COMMON_CATEGORY_LABELS = {
+    "high": "높음",
+    "low": "낮음",
+    "manageable": "감당 가능",
+    "constrained": "제한적",
+    "adequate": "충분함",
+    "unstable": "불안정",
+    "stable": "안정적",
+    "active": "활발",
+    "limited": "제한적",
+    "regular": "정기적",
+    "occasional": "가끔",
+    "none": "없음",
+    "employed": "재직 중",
+    "seeking": "구직 중",
+    "18_27": "18~27세",
+    "28_plus": "28세 이상",
+}
+
 AUDIENCE_TERMS = ("페르소나", "알고 싶", "이해하", "누구인지", "특성을 파악")
 # "반응·수용"을 물으면 페르소나 언급이 있어도 모의 인터뷰가 필요한 검토 요청이다.
 PLAN_REVIEW_TERMS = ("검토", "정책안", "기획안", "기획하", "평가", "개선안", "반응", "수용")
@@ -409,7 +429,13 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
         policy_domain = theme["id"]
         policy_focus = theme["label"]
         kosis_search_terms = [theme["label"]]
-        variables = theme["variables"]
+        variables = [
+            {
+                **item,
+                "category_labels": {code: COMMON_CATEGORY_LABELS.get(code, code) for code in item["categories"]},
+            }
+            for item in theme["variables"]
+        ]
         alternative_tuples = theme["alternatives"]
         interview_questions = DEFAULT_INTERVIEW_QUESTIONS
         rights_review = theme.get("rights_review")
