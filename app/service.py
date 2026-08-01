@@ -18,7 +18,7 @@ from .personas import (
     simulate_survey,
 )
 from .policy_review import build_policy_plan, policy_brief, summarize_panel_interviews, weighted_segments
-from .reporting import render_html_report, render_markdown_report
+from .reporting import render_html_report
 from .sources import (
     fetch_data_go_api,
     fetch_kosis_statistics,
@@ -818,15 +818,12 @@ class ResearchAgent:
             raise DomainError("RESULT_REQUIRED", "보고서 전에 통계 계산을 실행하세요.")
         self.store.update_run(run_id, status="completed")
         report_run = self.store.get_run(run_id)
-        report = render_markdown_report(report_run)
         html_report = render_html_report(report_run)
-        path = self.store.write_artifact(run_id, "report.md", report)
         html_path = self.store.write_artifact(run_id, "report.html", html_report)
         policy_review = (report_run.get("result") or {}).get("policy_review")
         downloads: dict[str, str] = {}
         if policy_review:
             downloads = {
-                "policy_brief": self.store.write_artifact(run_id, "policy_brief.md", policy_review["brief"]),
                 "panel": self.store.write_artifact(
                     run_id,
                     "panel.jsonl",
@@ -856,12 +853,11 @@ class ResearchAgent:
                     ),
                 ),
             }
-        self.store.append_event(run_id, "report.completed", {"artifact": path})
+        self.store.append_event(run_id, "report.completed", {"artifact": html_path})
         self._persist_manifest(run_id)
         return {
-            "markdown": report,
-            "artifact": path,
-            "html_artifact": html_path,
+            "html": html_report,
+            "artifact": html_path,
             "report_url": f"/api/runs/{run_id}/artifacts/report.html",
             "downloads": {key: f"/api/runs/{run_id}/artifacts/{Path(value).name}" for key, value in downloads.items()},
             "run": self.store.get_run(run_id),

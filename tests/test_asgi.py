@@ -296,15 +296,12 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
         self.assertIn(b'class="gt_table"', html)
-        status, markdown_headers, markdown = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/report.md"))
-        self.assertEqual(status, 200)
-        self.assertEqual(markdown_headers["content-type"], "text/markdown; charset=utf-8")
-        self.assertIn(b"#", markdown)
+        self.assertIn("정책 사전검증 브리프".encode(), html)
         status, json_headers, manifest = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/run.json"))
         self.assertEqual(status, 200)
         self.assertEqual(json_headers["content-type"], "application/json; charset=utf-8")
         self.assertEqual(json.loads(manifest)["id"], run_id)
-        self.assertEqual(set(report["downloads"]), {"policy_brief", "panel", "interviews", "evidence"})
+        self.assertEqual(set(report["downloads"]), {"panel", "interviews", "evidence"})
         for url in report["downloads"].values():
             status, _, artifact = asyncio.run(request("GET", url))
             self.assertEqual(status, 200)
@@ -359,7 +356,7 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertIn("report.write_provenance", tools)
         self.assertEqual(
             set(completed["artifacts"]),
-            {"html_report", "policy_brief", "panel", "interviews", "evidence"},
+            {"html_report", "panel", "interviews", "evidence"},
         )
         for url in completed["artifacts"].values():
             artifact_status, _, artifact = asyncio.run(request("GET", url))
