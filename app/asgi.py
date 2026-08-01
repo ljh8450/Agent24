@@ -224,7 +224,12 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
     try:
-        created = await asyncio.to_thread(agent.chat, text, body.get("event_id"), attachment_text or None)
+        prior_context = (
+            await asyncio.to_thread(agent._session_run_context, session_id) if session_id else ""
+        )
+        created = await asyncio.to_thread(
+            agent.chat, text, body.get("event_id"), attachment_text or None, prior_context or None
+        )
     except DomainError as error:
         await _send_sse(send, "error", {"code": error.code, "message": error.message, "details": error.details})
         await send({"type": "http.response.body", "body": b"", "more_body": False})

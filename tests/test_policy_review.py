@@ -97,8 +97,9 @@ class PolicyReviewTests(unittest.TestCase):
         policy_review = reviewed["result"]["policy_review"]
         self.assertEqual(policy_review["status"], "COMPLETED_WITH_ASSUMPTIONS")
         self.assertTrue(all(item["avatar"]["style"] == "notionists" for item in policy_review["panel"]))
-        self.assertEqual(len(policy_review["alternatives"]), 3)
-        self.assertEqual(len(policy_review["interviews"]), len(policy_review["panel"]) * 3)
+        # 비교 요구가 없는 검토 요청 — 요청안 하나만 검토하고 템플릿 대안을 발명하지 않는다.
+        self.assertEqual(len(policy_review["alternatives"]), 1)
+        self.assertEqual(len(policy_review["interviews"]), len(policy_review["panel"]))
         self.assertIn("정책 사전검증 브리프", policy_review["brief"])
         report = self.agent.report(self.run["id"])
         self.assertEqual(set(report["downloads"]), {"panel", "interviews", "evidence"})
@@ -198,6 +199,19 @@ class PolicyReviewTests(unittest.TestCase):
         )
         original = next(item for item in plan["alternatives"] if item["id"] == "original")
         self.assertIn("청년 문화비", original["label"])
+        # LLM이 대안 0개를 돌려줘도 정상 — 요청안 하나만 검토
+        plan = build_policy_plan(
+            "해당정책 가능성을 조사해줘",
+            "f",
+            llm_raw={**base, "alternatives": [], "reviewed_policy": "청년 문화비 월 3만원 지원"},
+        )
+        self.assertEqual([item["id"] for item in plan["alternatives"]], ["original"])
+
+    def test_keyword_fallback_invents_no_alternatives_without_comparison_request(self):
+        plan = build_policy_plan("서울 20대의 영화 문화생활 참여를 늘리기 위해 할인 정책을 검토해줘", "f")
+        self.assertEqual([item["id"] for item in plan["alternatives"]], ["original"])
+        compared = build_policy_plan("영화 할인 정책을 다른 대안과 비교 검토해줘", "f")
+        self.assertGreater(len(compared["alternatives"]), 1)
 
     def test_audience_request_skips_interviews_and_returns_fieldwork_questions(self):
         with (
