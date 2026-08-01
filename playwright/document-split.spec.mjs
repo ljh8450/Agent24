@@ -66,6 +66,7 @@ test("persona fleet rows appear in chat and open profile cards on the right", as
   await expect(native).toContainText("조건부");
   await expect(native).toContainText("원안");
   await expect(native.locator(".persona-answers-table")).toBeVisible();
+  await expect(native.locator(".persona-answers-table .answer-badge").first()).toHaveCSS("white-space", "nowrap");
   await native.locator(".persona-chip", { hasText: "나래" }).click();
   await expect(native.locator(".persona-detail")).toContainText("나래");
   await expect(native.locator(".persona-chip.is-active")).toContainText("나래");

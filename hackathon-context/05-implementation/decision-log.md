@@ -173,3 +173,23 @@ Source of Truth: false
 상위 문서와의 차이: API·안전 경계·P0 범위·외부 서비스·README·Raw Stream은 변경하지 않았다.
 검증: 완료된 검토 후 입력창과 제출 버튼이 모두 활성화되는 Playwright 회귀 단언을 추가하고, 기존 테스트를 실행한다.
 ```
+
+## DEC-016 Restore dark color palette
+
+```text
+시간: 2026-08-02
+요청: 색상 조합만 기존으로 되돌린다.
+판정: 화이트 테마 CSS 오버라이드와 light 브라우저 테마 힌트를 제거하고, 기존 다크 색상 토큰을 복원했다. 레이아웃과 요청 제출 잠금 로직은 유지한다.
+상위 문서와의 차이: frontend-design-spec.md와 UI 이슈 문서를 현재 다크 팔레트 기준으로 동기화했다. 문제정의·안전 경계·P0 범위·외부 서비스·README·Raw Stream은 변경하지 않았다.
+검증: 색상 오버라이드 제거와 HTML 테마 힌트를 정적 확인하고, 기존 브라우저 회귀 테스트를 실행한다.
+```
+
+## DEC-017 Persona response badge single-line display
+
+```text
+시간: 2026-08-02
+요청: 페르소나 상세 표의 반응 값을 한 줄로 표시한다.
+판정: 반응 열을 76px 최소 폭으로 고정하고, 반응 배지에 inline-flex와 white-space: nowrap을 적용했다. 정책안과 이유 열의 자연스러운 줄바꿈은 유지한다.
+상위 문서와의 차이: 정책 검토 내용·안전 경계·P0 범위·외부 서비스·README·Raw Stream은 변경하지 않았다.
+검증: 페르소나 상세 Playwright 테스트에서 반응 배지의 계산된 white-space가 nowrap인지 확인한다.
+```
