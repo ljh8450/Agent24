@@ -45,7 +45,7 @@ class ResearchAgent:
         target = self._target_hint(question)
         run = {
             "id": new_id("run"),
-            "session_key": f"agent:persona-restorer:webchat:{new_id('session')}",
+            "session_key": f"agent:e2p-agent:webchat:{new_id('session')}",
             "question": question,
             "target_population": target,
             "status": "waiting_for_review",

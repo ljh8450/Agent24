@@ -1,1 +1,1 @@
-"""Persona Restorer application package."""
+"""E2P Agent (Evidence-to-Persona) application package."""
