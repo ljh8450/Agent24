@@ -156,7 +156,9 @@ aside.study-inspector { display:none !important; }
 .matrix-details { margin:2px 0 20px; }
 .matrix-details summary { color:var(--text-tertiary); font-size:12px; cursor:pointer; }
 .matrix-details[open] summary { margin-bottom:8px; }
-.persona-group-label { padding:8px 14px 4px; color:var(--text-tertiary); font-size:10px; font-weight:600; letter-spacing:.04em; background:#131313; border-top:1px solid var(--border-light); }
+.persona-group-label { display:flex; align-items:center; gap:10px; padding:8px 14px 4px; color:var(--text-tertiary); font-size:10px; font-weight:600; letter-spacing:.04em; background:#131313; border-top:1px solid var(--border-light); }
+.persona-group-bar { flex:1; max-width:160px; height:4px; border-radius:2px; background:var(--border-light); overflow:hidden; }
+.persona-group-bar i { display:block; height:100%; background:var(--text-tertiary); border-radius:2px; }
 .persona-rows .persona-group-label:first-child { border-top:0; }
 .evidence-note { display:grid; gap:5px; margin:0 0 20px; padding:10px 13px; border:1px solid #48c77c33; border-radius:10px; background:#48c77c0d; }
 .evidence-note strong { color:#8fd6ab; font-size:11px; font-weight:600; letter-spacing:.03em; }
