@@ -137,6 +137,43 @@ class PartialCoverageLoopTests(EvidenceRecoveryLoopTests):
         self.assertEqual(approved, [])
 
 
+class ConflictFallbackTests(unittest.TestCase):
+    def test_conflicting_approvals_demote_part_of_core_and_recompute(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        agent = ResearchAgent(Path(temp.name))
+        run = agent.chat("대전 청년 버스 요금 지원을 검토해줘")["run"]
+        agent.store.add_source(
+            run["id"],
+            Source(
+                "src_conflict", "https://kosis.kr/t", "t", "KOSIS", "s", "2025", "2025", "p", 10, "h",
+                "data/source-cache/x.txt", trust_tier="korean_official",
+            ).as_dict(),
+        )
+        variable = run["variables"][0]
+        for index, category in enumerate(variable["categories"][:2]):
+            agent.add_constraint(
+                run["id"],
+                {
+                    "id": f"conflict_{index}",
+                    "source_id": "src_conflict",
+                    "label": category,
+                    "where": {variable["id"]: category},
+                    "relation": "eq",
+                    "value": 0.9,  # 둘이면 합 1.8 — 모순
+                    "population_compatibility": "exact",
+                    "raw_statement": "fixture (PRD_DE 2025)",
+                },
+            )
+        agent.approve_constraints(run["id"], {"constraint_ids": ["conflict_0", "conflict_1"]})
+        computed, mode = agent._compute_with_conflict_fallback(run["id"], ["conflict_0", "conflict_1"])
+        self.assertEqual(mode, "approved_public_constraints_after_conflict")
+        self.assertEqual(computed["result"]["status"], "feasible")
+        statuses = {item["id"]: item["review_status"] for item in agent.store.list_constraints(run["id"])}
+        self.assertEqual(statuses["conflict_0"], "approved")
+        self.assertEqual(statuses["conflict_1"], "conflicted")
+
+
 COLLECTION_TOOLS = {
     "web.parallel_korean_policy_research",
     "source.fetch_snapshot",

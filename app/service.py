@@ -307,8 +307,7 @@ class ResearchAgent:
 
         self.store.append_event(run_id, "tool.started", {"tool": "statistics.identification_bounds"})
         if approved_ids:
-            computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
-            evidence_mode = "approved_public_constraints"
+            computed, evidence_mode = self._compute_with_conflict_fallback(run_id, approved_ids)
         else:
             computed = self._scenario_only_model(run_id)
             evidence_mode = "scenario_only"
@@ -425,6 +424,36 @@ class ResearchAgent:
             "research": research,
             "artifacts": {"html_report": report["report_url"], **report["downloads"]},
         }
+
+    def _compute_with_conflict_fallback(self, run_id: str, approved_ids: list[str]) -> tuple[dict[str, Any], str]:
+        """자동 승인 제약이 서로 모순이면 최소 충돌 집합만 강등하고 재계산한다.
+
+        같은 변수를 서로 다른 분할로 공표한 두 표가 동시에 승인되면 합이 1을
+        넘어 infeasible이 된다. 사람 검토가 없는 자율 실행에서는 충돌 core를
+        'conflicted'로 강등해 나머지 근거로 계산하고, 그래도 안 되면 시나리오로
+        정직하게 내려간다. 강등 내역은 이벤트로 남는다.
+        """
+        computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
+        if computed["result"]["status"] != "infeasible":
+            return computed, "approved_public_constraints"
+        core = sorted(set(computed["result"].get("conflict_core") or []))
+        # ponytail: 충돌 core에서 사전순 첫 제약만 남기고 강등 — 근거 전멸을 막는 최소 규칙.
+        # 더 똑똑한 선택(exact 우선·최신 연도 우선)은 실측에서 필요해지면 얹는다.
+        drop = set(core[1:]) if len(core) > 1 else set(core)
+        self.store.append_event(
+            run_id, "statistics.conflict_demoted", {"dropped_constraint_ids": sorted(drop), "conflict_core": core}
+        )
+        for item in self.store.list_constraints(run_id):
+            if item["id"] in drop:
+                item["review_status"] = "conflicted"
+                item["override_note"] = ((item.get("override_note") or "") + " [자동] 상호 모순 최소 집합으로 강등됨").strip()
+                self.store.replace_constraint(run_id, item)
+        remaining = [identifier for identifier in approved_ids if identifier not in drop]
+        if remaining:
+            computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
+            if computed["result"]["status"] != "infeasible":
+                return computed, "approved_public_constraints_after_conflict"
+        return self._scenario_only_model(run_id), "scenario_only_after_conflict"
 
     def _uncovered_variables(self, run_id: str) -> list[str]:
         """승인 제약이 하나도 조건으로 삼지 않은 변수 id 목록."""

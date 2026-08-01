@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -325,8 +326,45 @@ def converse_with_memory(question: str, memory: list[dict[str, str]], context: s
     return reply.strip()
 
 
+def _published_table_preview(question: str) -> list[str]:
+    """질문 토큰으로 KOSIS 통합검색을 가볍게 훑어 실존 표 제목을 모은다.
+
+    플랜 변수를 '찾을 수 있는' 개념에 정합시키기 위한 힌트다. 키가 없거나
+    검색이 실패하면 빈 목록 — 플랜은 기존 방식 그대로 동작한다(#37).
+    """
+    if not os.getenv("KOSIS_API_KEY"):
+        return []
+    from .sources import search_kosis_tables
+
+    tokens: list[str] = []
+    for raw in re.split(r"[^0-9A-Za-z가-힣]+", question):
+        token = re.sub(r"(을|를|은|는|의|에서|에게|으로|로)$", "", raw)
+        if len(token) >= 2 and token not in tokens:
+            tokens.append(token)
+    titles: list[str] = []
+    for token in tokens[:4]:
+        try:
+            for table in search_kosis_tables(token, 4):
+                title = f"{table['survey_name']} — {table['table_name']}"
+                if title not in titles:
+                    titles.append(title)
+        except DomainError:
+            continue
+    return titles[:12]
+
+
 def llm_policy_plan(question: str) -> dict[str, Any]:
     """Ask the configured model to design question-specific, statistics-measurable plan pieces."""
+    preview = _published_table_preview(question)
+    preview_block = (
+        "REAL published KOSIS tables found for this question (ground your design in what actually exists): "
+        "design each variable so its categories are plausibly published by one of these tables, and prefer "
+        "kosis_search_terms naming these surveys/tables. Do not invent variables whose concept appears in none of them "
+        "unless the question makes it unavoidable.\n"
+        f"Published tables: {json.dumps(preview, ensure_ascii=False)}\n"
+        if preview
+        else ""
+    )
     prompt = (
         "You design a measurable policy-review plan grounded in Korean public statistics. Return JSON only: "
         "{policy_focus, target_population, variables:[{id,label,categories:[...]}], alternatives:[{label,hypothesis,risk}], "
@@ -341,6 +379,7 @@ def llm_policy_plan(question: str) -> dict[str, Any]:
         "'사회조사', '인구총조사', '경제활동인구조사') over topic words; each 1-3 words, no region names, no verbs, no sentences. "
         "5 short interview questions. rights_review only when the policy could "
         "restrict a group's rights, else null. Every display text in Korean.\n"
+        f"{preview_block}"
         f"Policy question: {question}"
     )
     return _call_json_model(prompt)
