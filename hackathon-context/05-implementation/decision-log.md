@@ -118,3 +118,37 @@ Source of Truth: false
 상위 문서와의 차이: loop 구현은 원격 이슈 범위에 따른 provisional 통합이며, evals/ 파일 소유권은 현재 이슈에 유지했다. 문제 정의·안전 경계·P0 범위는 변경하지 않았다.
 미해결: merge는 아직 커밋 전이며, 실제 GitHub Actions hosted 실행 결과는 확인하지 않았다.
 ```
+
+## DEC-011 Human-friendly frontend design alignment
+
+```text
+시간: 2026-08-02
+요청: 제공된 design (1).md를 현재 코드베이스와 하네스 구조에 맞게 반영하고 frontend 프로젝트 스킬을 만든다.
+판정: static/index.html과 static/style.css를 기존 API·data-testid·P0 산출물 계약을 유지하는 범위에서 리팩터링했다. 초기 화면은 입력 중심으로 단순화하고 실행 시작 후 기존 inspector를 노출한다.
+디자인 근거: C:\Users\dlwjd\Downloads\design (1).md의 304px sidebar, 64px topbar, centered composer, Evidence gateway, accessible state/copy 요구사항.
+스킬: skills/frontend-project/SKILL.md와 references/design-reference.md를 추가하고 원본 디자인 경로를 항상 참고하도록 명시했다.
+상위 문서와의 차이: 문제 정의·안전 경계·P0 범위·외부 서비스·README·Raw Stream은 변경하지 않았다. 우측 inspector는 디자인의 초기 2열 개념과 기존 실행 산출물 요구를 함께 만족시키기 위해 empty state에서만 숨긴다.
+검증: skill quick_validate 통과, unittest 33개 통과.
+미해결: 실제 브라우저 시각 QA는 Playwright/브라우저 실행 환경에서 별도 확인이 필요하다.
+```
+
+## DEC-012 Project-local frontend design specification
+
+```text
+시간: 2026-08-02
+요청: 외부 Downloads 디자인 파일이 아니라 프로젝트 폴더의 디자인 명세를 frontend 스킬이 참고하도록 변경한다.
+판정: docs/frontend-design-spec.md를 프로젝트 로컬 Source of Truth로 추가하고, skills/frontend-project/SKILL.md·references/design-reference.md·agents/openai.yaml의 참조를 모두 해당 파일로 전환했다.
+영향: 향후 frontend 작업은 외부 파일 없이 저장소만으로 디자인·접근성·반응형·카피 기준을 재현할 수 있다.
+상위 문서와의 차이: 문제 정의·안전 경계·P0 범위·외부 서비스·README·Raw Stream은 변경하지 않았다.
+검증: frontend-project quick_validate 통과, Downloads 경로 잔존 여부 확인, git diff --check 통과.
+```
+
+## DEC-013 Text breadcrumb header
+
+```text
+시간: 2026-08-02
+요청: header의 back/icon button 대신 `Policy review › 새 정책 검토` 텍스트 breadcrumb을 사용한다.
+판정: static/index.html의 topbar back button을 제거하고 semantic nav breadcrumb으로 변경했다. 새 정책 시작 기능은 sidebar의 기존 CTA로 유지한다.
+영향: 이미지 기준의 업무형 header가 적용되고, 현재 페이지가 `aria-current="page"`로 식별된다. API·실행 흐름·P0 산출물은 변경하지 않았다.
+검증: 기존 unittest 회귀 테스트와 git diff --check를 실행한다.
+```
