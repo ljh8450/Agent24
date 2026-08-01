@@ -91,5 +91,60 @@ class EvidenceRecoveryLoopTests(unittest.TestCase):
         self.assertEqual(len(self.decisions()), 2)
 
 
+COLLECTION_TOOLS = {
+    "web.parallel_korean_policy_research",
+    "source.fetch_snapshot",
+    "kosis.statistics_openapi",
+    "llm.extract_constraint_candidates",
+    "review.auto_approve_exact_constraints",
+}
+
+
+class StopContractTests(unittest.TestCase):
+    """계약(#32): stop = 수집 중단. 파이프라인은 scenario_only로 정직하게 완주한다."""
+
+    def test_stop_halts_collection_but_completes_the_run_honestly(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        agent = ResearchAgent(Path(temp.name))
+        env = {
+            "LLM_API_URL": "https://example.com/v1/chat/completions",
+            "LLM_API_KEY": "k",
+            "LLM_MODEL": "m",
+            "PERSONA_RESTORER_DEMO_MODEL": "1",
+            "KOSIS_API_KEY": "",
+        }
+        with (
+            patch.dict("os.environ", env),
+            patch("app.service.search_public_web", return_value=[]),
+            patch(
+                "app.service.decide_next_evidence_action",
+                return_value={"action": "stop", "queries": [], "reason": "검증용 안전 중단"},
+            ),
+            patch("app.service.synthesize_policy_insights", return_value="시뮬레이션 기반 인사이트"),
+        ):
+            completed = agent.autonomous_review("서울 청년 주거지원 안내 개선 정책을 검토해줘")
+
+        run = completed["run"]
+        events = run["events"]
+        stop_index = next(
+            index
+            for index, event in enumerate(events)
+            if event["type"] == "agent.decision" and event["payload"].get("action") == "stop"
+        )
+        started_after_stop = [
+            event["payload"].get("tool")
+            for event in events[stop_index + 1 :]
+            if event["type"] == "tool.started" and event["payload"].get("tool") in COLLECTION_TOOLS
+        ]
+        self.assertEqual(started_after_stop, [])
+        result = run["result"]
+        self.assertEqual(result["status"], "scenario_only")
+        self.assertIn("수집 중단 사유", result["evidence_gap"])
+        self.assertIn("검증용 안전 중단", result["evidence_gap"])
+        self.assertTrue(result.get("policy_review"))
+        self.assertIn("html_report", completed["artifacts"])
+
+
 if __name__ == "__main__":
     unittest.main()

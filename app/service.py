@@ -430,6 +430,10 @@ class ResearchAgent:
 
         Hard budgets live in code: at most two extra rounds, three new queries per
         round, and no query is ever repeated. The model only chooses WHAT to look at.
+
+        계약(#32): 'stop' 결정은 근거 **수집**의 중단이다 — 이 루프를 벗어난 뒤에는
+        수집 계열 도구(검색·스냅샷·KOSIS·추출·게이트)를 다시 호출하지 않는다.
+        파이프라인 자체는 scenario_only로 정직하게 완주해 패널·보고서를 산출한다.
         """
         tried_web = [str(query) for query in plan.get("evidence_queries") or []]
         tried_kosis = [str(term) for term in plan.get("kosis_search_terms") or []]
@@ -469,8 +473,16 @@ class ResearchAgent:
             if action == "kosis":
                 if not observation["kosis_available"]:
                     continue
-                tried_kosis += fresh
-                new_sources = self._autonomous_kosis_evidence(run_id, plan, queries_override=fresh or None)
+                if fresh:
+                    tried_kosis += fresh
+                    new_sources = self._autonomous_kosis_evidence(run_id, plan, queries_override=fresh)
+                elif not tried_kosis:
+                    # KOSIS 자체가 미시도면 기본(플랜·포커스) 검색어로 1회 시도하고 재사용을 막는다.
+                    tried_kosis.append("(기본 검색어)")
+                    new_sources = self._autonomous_kosis_evidence(run_id, plan)
+                else:
+                    # 새 검색어 없이 기시도 검색어를 반복하는 낭비 라운드는 건너뛴다.
+                    continue
             else:  # search
                 if not fresh:
                     break
@@ -762,6 +774,17 @@ class ResearchAgent:
         result["evidence_gap"] = (
             "모집단·시점·분모·범주가 일치하는 공개 교차표를 자동 검증하지 못해 식별구간은 [0,1]입니다."
         )
+        stop_decision = next(
+            (
+                event.get("payload", {})
+                for event in reversed(run.get("events", []))
+                if event.get("type") == "agent.decision" and event.get("payload", {}).get("action") == "stop"
+            ),
+            None,
+        )
+        if stop_decision:
+            # stop run도 누락 이유를 보존한다(#32) — 보고서·매니페스트에서 그대로 추적 가능.
+            result["evidence_gap"] += f" 에이전트 수집 중단 사유: {stop_decision.get('reason', '')}"
         self.store.update_run(run_id, result=result, estimand=estimand, status="running")
         self.store.append_event(run_id, "statistics.scenario_only", {"reason": "no_approved_constraints"})
         self._persist_manifest(run_id)
