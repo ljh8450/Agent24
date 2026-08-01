@@ -268,8 +268,6 @@ def _response_bars(alternatives: list[dict[str, Any]], responses: dict[str, Any]
         + '<p class="fine">가중 합성 패널의 모델 모의 응답 비중입니다. 실제 시민 여론이 아니며, 수치 표는 아래 "정책안과 모의 반응"에 있습니다.</p></section>'
     )
 
-<<<<<<< HEAD
-=======
 
 def render_html_report(run: dict[str, Any]) -> str:
     tables = report_tables(run)
@@ -377,4 +375,3 @@ def render_html_report(run: dict[str, Any]) -> str:
 </ul>
 <footer>run id: {escape(_text(run.get("id")))} · status: {escape(_text(run.get("status")))} · 로컬 provenance artifact</footer>
 </body></html>"""
->>>>>>> 65d458aacfa0c1440f278e1af0c5ea2026f5366e

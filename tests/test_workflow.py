@@ -67,7 +67,7 @@ class WorkflowTests(unittest.TestCase):
         sampled = self.agent.create_personas(
             self.run["id"], {"adult_population_confirmed": True, "count": 4, "seed": 7}
         )
-        self.assertEqual(len(sampled["result"]["personas"]["items"]), 3)
+        self.assertEqual(len(sampled["result"]["personas"]["items"]), 4)
         avatar = sampled["result"]["personas"]["items"][0]["avatar"]
         self.assertEqual(avatar["style"], "notionists")
         self.assertEqual(avatar["license"], "CC0-1.0")

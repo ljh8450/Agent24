@@ -131,7 +131,7 @@ DAG 후보별 점추정: {model_id: estimate}
 
 **POL-04.** 정책 브리프의 반응 비율은 “가중 합성 패널의 모의 인터뷰”로만 표기한다. 실제 시민 지지율·참여율·행동·인과효과의 표현은 허용하지 않는다.
 
-**POL-05.** README 기준 정책 패널 검토 보고서는 `report.md`, `panel.jsonl`, `interviews.jsonl`을 생성한다. 파일은 인증된 artifact gateway로만 읽을 수 있다.
+**POL-05.** 정책 패널 검토 보고서는 `policy_brief.md`, `panel.jsonl`, `interviews.jsonl`, `evidence.json`을 생성한다. 파일은 인증된 artifact gateway로만 읽을 수 있다.
 
 **RP-02.** 전문 보고서는 수치의 출처·조건·승인 상태와 점추정/식별구간의 차이를 표로 드러내야 하며, 합성 페르소나·서술을 실제 조사로 표현해서는 안 된다.
 

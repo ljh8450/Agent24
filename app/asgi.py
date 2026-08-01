@@ -233,8 +233,6 @@ async def _dispatch(method: str, path: str, receive: Any) -> tuple[int, bytes, s
         return _json(200, {"status": "ok", "root": str(ROOT)})
     if method == "GET" and path == "/api/source-catalog":
         return _json(200, await asyncio.to_thread(agent.source_catalog))
-    if method == "GET" and path == "/openapi.json":
-        return _json(200, build_openapi_document())
     if method == "POST" and path == "/api/chat":
         body = await _payload(receive)
         return _json(201, await asyncio.to_thread(agent.chat, str(body.get("text", "")), body.get("event_id")))

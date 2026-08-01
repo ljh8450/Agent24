@@ -88,11 +88,7 @@ class PolicyReviewTests(unittest.TestCase):
         self.assertEqual(len(policy_review["interviews"]), len(policy_review["panel"]) * 3)
         self.assertIn("정책 사전검증 브리프", policy_review["brief"])
         report = self.agent.report(self.run["id"])
-<<<<<<< HEAD
-        self.assertEqual(set(report["downloads"]), {"panel", "interviews"})
-=======
         self.assertEqual(set(report["downloads"]), {"panel", "interviews", "evidence"})
->>>>>>> 65d458aacfa0c1440f278e1af0c5ea2026f5366e
         for url in report["downloads"].values():
             self.assertTrue(
                 (Path(self.temp.name) / "data" / "runs" / self.run["id"] / url.rsplit("/", 1)[-1]).is_file()

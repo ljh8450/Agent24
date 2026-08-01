@@ -303,7 +303,9 @@ def build_policy_plan(question: str, fallback_target: str) -> dict[str, Any]:
             "이 정책안을 이용할 의향이 있나요?",
             "이용 또는 미이용의 가장 큰 장벽은 무엇인가요?",
             "어떤 조건이 바뀌면 이용 가능성이 달라질까요?",
-        ][:3],
+            "이 정책에서 빠질 가능성이 큰 집단은 누구인가요?",
+            "정책을 더 공정하고 접근 가능하게 바꾸려면 무엇이 필요할까요?",
+        ],
         "evidence_queries": queries,
         "review_gates": [
             "통계표의 모집단·시점·범주가 대상 정의와 호환되는지 검토",
@@ -317,7 +319,7 @@ def build_policy_plan(question: str, fallback_target: str) -> dict[str, Any]:
 def weighted_segments(
     states: list[dict[str, str]],
     distribution: list[float],
-    limit: int = 3,
+    limit: int = 12,
     evidence_level: str = "partial_estimate",
 ) -> list[dict[str, Any]]:
     ranked = sorted(zip(states, distribution, strict=True), key=lambda item: item[1], reverse=True)[:limit]
