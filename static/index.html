@@ -4,15 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#000000">
-    <title>E2P Agent · 정책 검토 에이전트</title>
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
+    <a class="skip-link" href="#chat-input">본문 입력으로 건너뛰기</a>
     <main class="workbench-shell" data-testid="app-shell">
       <aside class="workbench-sidebar" aria-label="정책 검토 탐색">
         <header class="sidebar-header">
           <button class="product-brand" type="button" data-action="new-policy"><span class="brand-mark"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg></span><strong>E2P Agent</strong></button>
-          <button class="icon-button" type="button" title="사이드바 접기" aria-label="사이드바 접기">‹</button>
+          <button class="icon-button" type="button" data-action="toggle-sidebar" title="사이드바 접기" aria-label="사이드바 접기" aria-expanded="true">‹</button>
         </header>
         <div class="sidebar-actions"><button class="new-study-button" type="button" data-action="new-policy"><span class="sidebar-svg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span><span>새 정책 검토</span></button></div>
         <section class="project-list" aria-label="로컬 정책 검토">
@@ -25,9 +25,8 @@
 
       <section class="workbench-main">
         <header class="workbench-topbar">
-          <button class="icon-button topbar-back" type="button" data-action="new-policy" aria-label="새 정책 검토">←</button>
-          <div class="project-heading"><span>Policy review</span><span>›</span><strong id="run-title">새 정책 검토</strong></div>
-          <div class="topbar-actions"><span class="save-state" id="run-status">입력 대기</span></div>
+          <nav class="project-heading" aria-label="현재 위치"><span>Policy review</span><span aria-hidden="true">›</span><strong id="run-title" aria-current="page">새 정책 검토</strong></nav>
+          <div class="topbar-actions"><span class="save-state" id="run-status" role="status" aria-live="polite">입력 대기</span></div>
         </header>
 
         <div class="workbench-body">
@@ -36,15 +35,14 @@
               <div class="chat-scroll" id="chat-scroll">
                 <div class="chat-thread">
                   <header class="chat-study-header"><h1>정책 검토 에이전트</h1><p id="run-subtitle">정책 의도 한 문장을 받으면 조사 설계, 한국 근거 수집, PGM, 합성 패널, 권리 검토와 보고서까지 에이전트가 실행합니다.</p></header>
-                  <section class="chat-message" id="welcome"><div class="chat-message-body"><strong>정책 검토 에이전트</strong><p>검토할 정책을 한 문장으로 적으세요. 사용자는 통계 변수나 API 값을 입력하지 않습니다. 모든 실행물과 출처는 우측 Artifacts에 남습니다.</p></div></section>
+                  <section class="chat-message welcome-message" id="welcome"><div class="chat-message-body"><strong>시작할 준비가 됐습니다</strong><p>정책 목표, 대상, 지역, 기간 또는 예산을 자연어로 입력하세요. 필요한 근거와 실행 단계는 에이전트가 정리합니다.</p></div></section>
                   <section id="conversation" aria-live="polite"></section>
                   <section id="stream-tail" aria-live="polite"></section>
                 </div>
               </div>
               <form id="chat-form" class="chatgpt-composer" data-testid="research-composer">
-                <span class="chatgpt-composer-attach" aria-hidden="true">＋</span>
-                <div class="composer-input-shell"><textarea id="chat-input" data-testid="question-input" required placeholder="정책 목표, 대상, 지역, 기간 또는 예산을 입력하세요" rows="1"></textarea></div>
-                <button class="composer-agent-trigger" type="button" title="에이전트 구성" aria-label="에이전트 구성">Auto⌄</button>
+                <button class="chatgpt-composer-attach" type="button" aria-label="참고 자료 추가" title="참고 자료 추가">＋</button>
+                <div class="composer-input-shell"><label class="sr-only" for="chat-input">검토할 정책 의도</label><textarea id="chat-input" data-testid="question-input" required aria-describedby="composer-help" placeholder="정책 목표, 대상, 지역, 기간 또는 예산을 입력하세요" rows="1"></textarea></div>
                 <button class="chatgpt-composer-send" type="submit" data-testid="start-research" aria-label="정책 검토 시작">↑</button>
               </form>
             </section>
