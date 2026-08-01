@@ -136,6 +136,30 @@ class SimulatePolicyInterviewTests(unittest.TestCase):
                 personas.simulate_policy_interviews(PANEL, PLAN, seed=1)
 
 
+class PublishedTablePreviewTests(unittest.TestCase):
+    def test_real_table_titles_are_injected_into_the_plan_prompt(self):
+        tables = [
+            {"survey_name": "주거실태조사", "table_name": "지역별 소득계층별 점유형태", "org_id": "116", "table_id": "T1", "path": ""}
+        ]
+        with (
+            patch.dict("os.environ", {**LLM_ENV, "KOSIS_API_KEY": "k"}),
+            patch("app.sources.search_kosis_tables", return_value=tables),
+            patch("app.personas._call_json_model", return_value={}) as call,
+        ):
+            personas.llm_policy_plan("서울 청년 월세 부담 정책을 검토해줘")
+        prompt = call.call_args.args[0]
+        self.assertIn("주거실태조사 — 지역별 소득계층별 점유형태", prompt)
+        self.assertIn("Published tables", prompt)
+
+    def test_without_kosis_key_plan_prompt_is_unchanged(self):
+        with (
+            patch.dict("os.environ", {**LLM_ENV, "KOSIS_API_KEY": ""}),
+            patch("app.personas._call_json_model", return_value={}) as call,
+        ):
+            personas.llm_policy_plan("서울 청년 월세 부담 정책을 검토해줘")
+        self.assertNotIn("Published tables", call.call_args.args[0])
+
+
 class PartialCoverageFlagTests(unittest.TestCase):
     def make(self, category, value, note=""):
         return {
