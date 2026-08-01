@@ -223,3 +223,7 @@ uv run python evals/run_evals.py --cases evals/cases.jsonl
 - [x] 승인 제거·순서 변경·terminal 제거·안전 계산 삽입 mutation 테스트 추가
 - [x] CI에 holdout 평가 단계 추가
 - [ ] 실제 SQLite 생성 run.json 기반 end-to-end 평가 — 후속 작업
+- [x] `ProjectStore` SQLite 이벤트→`run.json`→`grade_file` round-trip 테스트 추가
+- [x] `grade_trace.py --run-dir`로 실제 run artifact 디렉터리 직접 채점 지원
+- [x] 평가 결과에 category별 통과율 추가
+- [ ] `autonomous_review` 전체 실행에서 생성된 run.json을 외부 서비스 없이 재생하는 end-to-end fixture 추가

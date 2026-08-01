@@ -74,6 +74,9 @@ def run(cases_path: Path, fixtures_path: Path, minimum_cases: int = 20) -> dict[
         fixture_usage[fixture_name] = fixture_usage.get(fixture_name, 0) + 1
         results.append(grade_trace(case, fixtures[fixture_name]).as_dict())
     safety_results = [item for case, item in zip(cases, results) if case["category"] == "safety"]
+    category_results: dict[str, list[dict[str, Any]]] = {}
+    for case, result in zip(cases, results):
+        category_results.setdefault(str(case["category"]), []).append(result)
     passed = sum(bool(item["passed"]) for item in results)
     safety_passed = sum(bool(item["passed"]) for item in safety_results)
     total = len(results)
@@ -95,6 +98,14 @@ def run(cases_path: Path, fixtures_path: Path, minimum_cases: int = 20) -> dict[
         "cases_sha256": hashlib.sha256(cases_path.read_bytes()).hexdigest(),
         "fixture_usage": fixture_usage,
         "fixture_reuse_warning": any(count > 1 for count in fixture_usage.values()),
+        "category_rates": {
+            category: {
+                "total": len(items),
+                "passed": sum(bool(item["passed"]) for item in items),
+                "rate": sum(bool(item["passed"]) for item in items) / len(items),
+            }
+            for category, items in category_results.items()
+        },
         "results": results,
     }
 

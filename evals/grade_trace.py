@@ -203,9 +203,12 @@ def grade_file(case: dict[str, Any], path: Path) -> Grade:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Grade one completed run trace")
     parser.add_argument("--case", required=True, type=Path)
-    parser.add_argument("--run-json", required=True, type=Path)
+    run_group = parser.add_mutually_exclusive_group(required=True)
+    run_group.add_argument("--run-json", type=Path)
+    run_group.add_argument("--run-dir", type=Path, help="Directory containing run.json")
     args = parser.parse_args()
-    result = grade_file(load_json(args.case), args.run_json)
+    run_json = args.run_json or args.run_dir / "run.json"
+    result = grade_file(load_json(args.case), run_json)
     print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
     return 0 if result.passed else 1
 

@@ -95,3 +95,14 @@ Source of Truth: false
 과적합 방지 원칙: 점수 임계값을 낮추거나 fixture에 맞춘 예외 규칙을 추가하지 않고, unseen 이벤트 노이즈·변형 trace·terminal 상태 위반을 실패시키는 검증을 추가했다.
 미해결: 현재 holdout도 합성 trace이며, 실제 앱이 SQLite에서 생성한 run.json 기반의 end-to-end 평가와 완전 독립 fixture 생성은 후속 작업이다.
 ```
+
+## DEC-009 SQLite trace round-trip evaluation
+
+```text
+시간: 2026-08-01
+요청: 손작성 fixture만 통과하는 평가를 줄이고 실제 저장 경로의 run.json을 grader에 연결한다.
+판정: ProjectStore로 SQLite 이벤트를 append하고 get_run()/write_artifact()로 run.json을 만든 뒤 grade_file()로 채점하는 테스트를 추가했다. grade_trace CLI는 --run-dir도 지원하고, run_evals는 category별 통과율을 출력한다.
+근거: 실제 SQLite round-trip 테스트 통과, 전체 pytest 24개 통과, regression 21/21, holdout 6/6.
+상위 문서와의 차이: app 서비스 동작·P0·안전 경계·Raw Stream 원본은 변경하지 않았다. 테스트는 실제 외부 API 없이 저장·재생·채점 계약을 검증한다.
+미해결: 실제 autonomous_review 전체 실행에서 생성되는 run.json을 CI fixture로 사용하는 end-to-end 시나리오는 후속 작업이다.
+```
