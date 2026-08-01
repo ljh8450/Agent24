@@ -94,6 +94,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("가정 없는 식별구간", html)
         self.assertIn("정책 검토 보고서", html)
 
+    def test_variable_categories_accept_code_label_objects(self):
+        from app.contracts import Variable
+
+        variable = Variable.parse(
+            {
+                "id": "housing_tenure_type",
+                "label": "점유 형태",
+                "categories": [{"code": "jeonse", "label": "전세"}, {"code": "monthly_rent", "label": "월세"}],
+            }
+        )
+        self.assertEqual(variable.categories, ("jeonse", "monthly_rent"))
+
     def test_unknown_population_constraint_requires_explicit_override(self):
         self.agent.set_variables(self.run["id"], {"variables": [{"id": "region", "categories": ["daejeon", "other"]}]})
         self.add_source()

@@ -26,7 +26,15 @@ class Variable:
     @staticmethod
     def parse(value: dict[str, Any]) -> Variable:
         variable_id = str(value.get("id", "")).strip()
-        categories = tuple(str(item).strip() for item in value.get("categories", []))
+
+        def category_code(item: Any) -> str:
+            # 플랜 모델이 categories를 [{code,label}] 객체로 돌려주는 경우가 있다 —
+            # dict를 그대로 str()하면 추출·패널·보고서 전부가 깨진 카테고리로 오염된다.
+            if isinstance(item, dict):
+                item = item.get("code") or item.get("id") or item.get("label") or ""
+            return str(item).strip()
+
+        categories = tuple(category_code(item) for item in value.get("categories", []))
         if not variable_id or len(categories) < 2 or len(set(categories)) != len(categories):
             raise DomainError("INVALID_VARIABLE", "변수는 고유 ID와 중복 없는 두 개 이상의 범주가 필요합니다.")
         return Variable(variable_id, str(value.get("label") or variable_id), categories)
