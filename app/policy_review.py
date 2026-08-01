@@ -24,6 +24,12 @@ def _compact_safety_text(value: str) -> str:
 HIGH_IMPACT_DOMAINS = ("채용", "고용", "구직", "신용", "대출", "보험", "의료", "진료", "교육", "입학", "수사", "범죄", "지원")
 INDIVIDUAL_DECISIONS = ("자동판정", "자동결정", "판정", "심사", "선별", "골라", "고르", "배제", "제한", "거절", "탈락", "등급")
 SENSITIVE_ATTRIBUTES = ("우울", "정신질환", "질병", "성격", "정치성향")
+NON_HUMAN_PERSONA_TERMS = ("티라노사우르스", "공룡", "마법사", "마법", "드래곤", "요정", "외계인", "로봇")
+VEHICLE_TERMS = ("자동차", "승용차", "차량")
+VEHICLE_CONTEXT_TERMS = (
+    "이동", "교통", "통근", "통행", "운전", "차량", "자가용", "이용수단",
+    "vehicle", "transport", "transit", "commute", "mobility", "car",
+)
 
 
 def _constructive_plan_text(raw: dict[str, Any]) -> str:
@@ -53,6 +59,37 @@ def _contains_unsafe_plan_content(value: str) -> bool:
             or ("대상자" in compact and "선정" in compact)
         )
     )
+
+
+def has_unrealistic_persona_schema(variables: list[dict[str, Any]]) -> bool:
+    """Reject fantasy identities before they can become sampled persona attributes.
+
+    Cars remain valid only as a transport-related *attribute* (for example,
+    car ownership); they cannot be a persona identity or an unscoped category.
+    """
+    for variable in variables:
+        if not isinstance(variable, dict):
+            return True
+        label = str(variable.get("label") or variable.get("id") or "")
+        categories = variable.get("categories") or []
+        if not isinstance(categories, list):
+            return True
+        transport_context = any(term in label.casefold() for term in VEHICLE_CONTEXT_TERMS)
+        for category in categories:
+            if isinstance(category, dict):
+                value = " ".join(
+                    str(category.get(key) or "") for key in ("code", "id", "label")
+                )
+            else:
+                value = str(category)
+            compact = _compact_safety_text(f"{label} {value}")
+            if any(term in compact for term in NON_HUMAN_PERSONA_TERMS):
+                return True
+            if re.search(r"(?:^|[^0-9])\d{4,}(?:[^0-9]|$)", value):
+                return True
+            if any(term in value.casefold() for term in VEHICLE_TERMS) and not transport_context:
+                return True
+    return False
 
 
 THEMES: tuple[dict[str, Any], ...] = (
@@ -296,6 +333,7 @@ def _request_type(question: str) -> str:
 
 def _is_unsafe(question: str) -> str | None:
     compact = _compact_safety_text(question)
+    nonhuman_persona = any(term in compact for term in NON_HUMAN_PERSONA_TERMS)
     political = _contains_any(compact, ("보수", "진보", "지지자", "투표", "선거")) and _contains_any(
         compact, ("설득", "조작", "공략", "골라", "고르")
     )
@@ -312,6 +350,8 @@ def _is_unsafe(question: str) -> str | None:
         )
     if coercion:
         return "강압·배제·불이익을 전제로 한 정책 최적화는 지원하지 않습니다. 자발적 접근성과 형평성 검토로 바꾸세요."
+    if nonhuman_persona:
+        return "가상 페르소나는 현실의 성인 인간 대상 통계만 사용할 수 있습니다. 비인간·초자연적 존재를 정책 대상으로 삼을 수 없습니다."
     if sensitive_inference:
         return "인구통계로 민감 특성을 추론하거나 표적화하는 요청은 지원하지 않습니다. 집계 수준의 비식별 서비스 접근성 분석으로 바꾸세요."
     if high_impact_decision:
@@ -341,6 +381,8 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
         request_type = None  # 무효 값은 키워드 폴백에 맡긴다
     variables_raw = raw.get("variables")
     if not isinstance(variables_raw, list) or not 2 <= len(variables_raw) <= 4:
+        return None
+    if has_unrealistic_persona_schema(variables_raw):
         return None
     variables: list[dict[str, Any]] = []
     for item in variables_raw:

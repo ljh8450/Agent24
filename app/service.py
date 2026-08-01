@@ -27,6 +27,7 @@ from .personas import (
 from .policy_review import (
     _is_unsafe,
     build_policy_plan,
+    has_unrealistic_persona_schema,
     labeled_attributes,
     policy_brief,
     summarize_panel_interviews,
@@ -955,7 +956,13 @@ class ResearchAgent:
             raise DomainError(
                 "RUN_IMMUTABLE", "계산 결과가 있는 run의 변수 스키마는 바꿀 수 없습니다. 새 run을 만드세요."
             )
-        variables = parse_variables(payload.get("variables", []))
+        raw_variables = payload.get("variables", [])
+        if has_unrealistic_persona_schema(raw_variables):
+            raise DomainError(
+                "INVALID_PERSONA_SCHEMA",
+                "가상 페르소나는 현실의 성인 인간 대상 통계 변수만 사용할 수 있습니다.",
+            )
+        variables = parse_variables(raw_variables)
         self.store.update_run(
             run_id,
             variables=[{"id": item.id, "label": item.label, "categories": list(item.categories)} for item in variables],

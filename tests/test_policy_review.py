@@ -159,6 +159,42 @@ class PolicyReviewTests(unittest.TestCase):
             {"under_20": "월세 부담 20% 미만", "over_20": "월세 부담 20% 이상"},
         )
 
+    def test_llm_plan_with_fantasy_persona_schema_falls_back(self):
+        llm_raw = {
+            "policy_focus": "청년 주거 지원",
+            "target_population": "서울 청년",
+            "variables": [
+                {"id": "species", "label": "종족", "categories": ["human", "tyrannosaurus"]},
+                {"id": "age", "label": "나이", "categories": ["adult", "2000살"]},
+            ],
+            "alternatives": [{"label": "월세 지원"}],
+            "evidence_queries": ["서울 청년 주거 통계"],
+        }
+        plan = build_policy_plan("서울 청년 주거 지원 정책을 검토해줘", "서울 청년", llm_raw=llm_raw)
+        self.assertEqual(plan["plan_source"], "keyword_template_after_rejected_llm_plan")
+
+    def test_nonhuman_policy_target_is_blocked_before_a_plan_is_created(self):
+        plan = build_policy_plan("티라노사우르스 청년을 위한 주거 정책을 검토해줘", "대한민국 성인")
+        self.assertEqual(plan["status"], "SAFETY_BLOCKED")
+        self.assertIn("성인 인간", plan["blocked_reason"])
+
+    def test_transport_attribute_is_not_rejected_as_a_car_persona(self):
+        plan = build_policy_plan(
+            "서울 청년 이동 지원 정책을 검토해줘",
+            "서울 청년",
+            llm_raw={
+                "policy_focus": "청년 이동 지원",
+                "target_population": "서울 청년",
+                "variables": [
+                    {"id": "vehicle_access", "label": "자가용 이용", "categories": ["자동차 이용", "미이용"]},
+                    {"id": "cost", "label": "교통비 부담", "categories": ["high", "low"]},
+                ],
+                "alternatives": [{"label": "교통비 지원"}],
+                "evidence_queries": ["서울 청년 교통 통계"],
+            },
+        )
+        self.assertEqual(plan["plan_source"], "llm_designed")
+
 
     def test_llm_request_type_overrides_keyword_and_invalid_falls_back(self):
         base = {

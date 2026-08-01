@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.contracts import Source
+from app.errors import DomainError
 from app.service import ResearchAgent
 
 # Tests must never reach a real model API, even when a local .env was loaded by another module.
@@ -108,6 +109,20 @@ class WorkflowTests(unittest.TestCase):
             }
         )
         self.assertEqual(variable.categories, ("jeonse", "monthly_rent"))
+
+    def test_set_variables_rejects_nonhuman_persona_schema(self):
+        with self.assertRaisesRegex(DomainError, "현실의 성인 인간"):
+            self.agent.set_variables(
+                self.run["id"],
+                {"variables": [{"id": "identity", "categories": ["마법사", "티라노사우르스"]}]},
+            )
+
+    def test_set_variables_allows_vehicle_access_as_a_realistic_attribute(self):
+        updated = self.agent.set_variables(
+            self.run["id"],
+            {"variables": [{"id": "vehicle_access", "categories": ["car", "no_car"]}]},
+        )
+        self.assertEqual(updated["variables"][0]["id"], "vehicle_access")
 
     def test_llm_labels_flow_to_a_unique_weighted_panel_and_report(self):
         llm_plan = {
