@@ -282,14 +282,22 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
         if not isinstance(categories_raw, list) or not 2 <= len(categories_raw) <= 4:
             return None
         categories = []
+        category_labels: dict[str, str] = {}
         for category in categories_raw:
             if isinstance(category, dict):
                 # 플랜 모델이 {code,label} 객체로 주는 경우 — str(dict)로 삼키면 하류 전체가 오염된다.
-                category = category.get("code") or category.get("id") or category.get("label") or ""
-            categories.append(str(category).strip())
+                code = str(category.get("code") or category.get("id") or category.get("label") or "").strip()
+                category_label = str(category.get("label") or code).strip()
+            else:
+                code = str(category).strip()
+                category_label = code
+            categories.append(code)
+            category_labels[code] = category_label
         if not all(categories) or len(set(categories)) != len(categories):
             return None
-        variables.append({"id": var_id, "label": label, "categories": categories})
+        variables.append(
+            {"id": var_id, "label": label, "categories": categories, "category_labels": category_labels}
+        )
     if len({item["id"] for item in variables}) != len(variables):
         return None
     alternatives_raw = raw.get("alternatives")
@@ -433,11 +441,32 @@ SYNTHETIC_SEGMENT_NAMES = (
 )
 
 
+def labeled_attributes(
+    state: dict[str, str],
+    variable_labels: dict[str, str] | None = None,
+    category_labels: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    variable_labels = variable_labels or {}
+    category_labels = category_labels or {}
+    return [
+        {
+            "variable": variable_labels.get(key, key),
+            "variable_code": key,
+            "value": category_labels.get(key, {}).get(value, value),
+            "code": value,
+            "tag": "model_weighted",
+        }
+        for key, value in state.items()
+    ]
+
+
 def weighted_segments(
     states: list[dict[str, str]],
     distribution: list[float],
     limit: int = 12,
     evidence_level: str = "partial_estimate",
+    variable_labels: dict[str, str] | None = None,
+    category_labels: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     # 같은 가중치 셀만 상위에 몰리면 차등 분포가 있어도 균일해 보인다 —
     # 가중치 티어별 라운드로빈으로 뽑아 패널이 분포의 실제 모양을 드러내게 한다.
@@ -456,7 +485,7 @@ def weighted_segments(
             "id": f"P{index:02d}",
             "display_name": SYNTHETIC_SEGMENT_NAMES[(index - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
             "avatar": notionists_avatar(f"P{index:02d}"),
-            "attributes": [{"variable": key, "value": value, "tag": "model_weighted"} for key, value in state.items()],
+            "attributes": labeled_attributes(state, variable_labels, category_labels),
             "weight": float(weight),
             "weight_display": f"{weight * 100:.1f}%",
             "evidence_level": evidence_level,
@@ -578,7 +607,10 @@ def policy_brief(
     low_access = [
         item
         for item in panel
-        if any(attr["value"] in {"high", "constrained", "unstable", "none", "seeking"} for attr in item["attributes"])
+        if any(
+            attr.get("code", attr["value"]) in {"high", "constrained", "unstable", "none", "seeking"}
+            for attr in item["attributes"]
+        )
     ]
     return (
         "\n".join(

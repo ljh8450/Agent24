@@ -25,9 +25,10 @@ from .personas import (
 )
 from .policy_review import (
     build_policy_plan,
+    labeled_attributes,
     policy_brief,
-    sampled_segments,
     summarize_panel_interviews,
+    weighted_segments,
 )
 from .reporting import render_html_report
 from .sources import (
@@ -234,7 +235,13 @@ class ResearchAgent:
                 stored["id"],
                 status="planning",
                 variables=[
-                    {"id": item.id, "label": item.label, "categories": list(item.categories)} for item in proposed
+                    {
+                        "id": item.id,
+                        "label": item.label,
+                        "categories": list(item.categories),
+                        "category_labels": dict(plan["proposed_variables"][index].get("category_labels") or {}),
+                    }
+                    for index, item in enumerate(proposed)
                 ],
             )
             self.store.append_event(
@@ -797,7 +804,16 @@ class ResearchAgent:
         plan = self._latest_policy_plan(run)
         result = run["result"] or {}
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
+        variable_labels = {item["id"]: item.get("label") or item["id"] for item in run["variables"]}
+        category_labels = {item["id"]: item.get("category_labels") or {} for item in run["variables"]}
+        panel = weighted_segments(
+            result["states"],
+            result["distribution"],
+            limit=12,
+            evidence_level=evidence_level,
+            variable_labels=variable_labels,
+            category_labels=category_labels,
+        )
         review = {
             "status": review_status,
             "plan_id": plan["id"],
@@ -1092,21 +1108,32 @@ class ResearchAgent:
                 "FEASIBLE_MODEL_REQUIRED", "가중 가상 시민 패널은 PGM 또는 scenario-only 결과 뒤에만 만들 수 있습니다."
             )
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
+        variable_labels = {item["id"]: item.get("label") or item["id"] for item in run["variables"]}
+        category_labels = {item["id"]: item.get("category_labels") or {} for item in run["variables"]}
+        panel = weighted_segments(
+            result["states"],
+            result["distribution"],
+            limit=12,
+            evidence_level=evidence_level,
+            variable_labels=variable_labels,
+            category_labels=category_labels,
+        )
         demo_mode = os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1"
 
-        # 같은 결합 셀에서 표집된 인물들은 속성이 동일하므로, 셀 대표 1명씩만 모델을 호출하고
-        # 응답을 표본 전체에 복제한다 — 통계는 표본 개수(=분포 비례)로 계산된다.
+        # 내부 계산용 code로 셀을 식별하고, 표시·프롬프트에는 한국어 label을 전달한다.
         def cell_signature(segment: dict[str, Any]) -> tuple:
-            return tuple((item["variable"], item["value"]) for item in segment["attributes"])
+            return tuple(
+                (item.get("variable_code", item["variable"]), item.get("code", item["value"]))
+                for item in segment["attributes"]
+            )
 
-        # 비례 표집에서 좌석을 받지 못한 소수 세그먼트는 침묵하는 사각지대가 되므로 명시적으로 공개한다.
+        # 유니크 셀 패널의 상한 밖에 남은 세그먼트는 침묵하는 사각지대가 되므로 명시적으로 공개한다.
         total_weight = sum(float(weight) for weight in result["distribution"]) or 1.0
         sampled_cell_keys = {cell_signature(segment) for segment in panel}
         omitted_cells = sorted(
             (
                 {
-                    "attributes": [{"variable": key, "value": value} for key, value in state.items()],
+                    "attributes": labeled_attributes(state, variable_labels, category_labels),
                     "share": float(weight) / total_weight,
                 }
                 for state, weight in zip(result["states"], result["distribution"])
@@ -1116,35 +1143,21 @@ class ResearchAgent:
             reverse=True,
         )[:8]
 
-        representatives: dict[tuple, dict[str, Any]] = {}
-        for segment in panel:
-            representatives.setdefault(cell_signature(segment), segment)
-        unique_panel = list(representatives.values())
-        representative_id = {signature: segment["id"] for signature, segment in representatives.items()}
-
         narrate_pool = ThreadPoolExecutor(max_workers=1)
         narrate_future = (
-            narrate_pool.submit(narrate_panel_segments, unique_panel, plan.get("policy_focus"))
+            narrate_pool.submit(narrate_panel_segments, panel, plan.get("policy_focus"))
             if not demo_mode
             else None
         )
         try:
-            raw_interviews = simulate_policy_interviews(
-                unique_panel, plan, int((result.get("personas") or {}).get("seed", 20260801))
+            interviews = simulate_policy_interviews(
+                panel, plan, int((result.get("personas") or {}).get("seed", 20260801))
             )
-            answers_by_representative: dict[str, list[dict[str, Any]]] = {}
-            for item in raw_interviews:
-                answers_by_representative.setdefault(str(item["segment_id"]), []).append(item)
-            interviews = [
-                {**item, "segment_id": segment["id"]}
-                for segment in panel
-                for item in answers_by_representative.get(representative_id[cell_signature(segment)], [])
-            ]
             if narrate_future is not None:
                 try:
                     profiles = narrate_future.result()
                     for segment in panel:
-                        segment["narrative"] = profiles[representative_id[cell_signature(segment)]]
+                        segment["narrative"] = profiles[segment["id"]]
                 except DomainError:
                     pass
         finally:

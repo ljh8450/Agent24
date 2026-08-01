@@ -384,7 +384,7 @@ def render_html_report(run: dict[str, Any]) -> str:
         )
         omitted_html = (
             "<h3>표본 밖 세그먼트</h3>"
-            '<p class="footnote">모집단 비중이 있으나 비례 표집에서 좌석을 받지 못해 이번 표본에서 발화하지 못한 집단입니다. '
+            '<p class="footnote">모집단 비중이 있으나 유니크 셀 패널 상한 밖에 있어 이번 패널에서 발화하지 못한 집단입니다. '
             "사각지대 해석 시 반드시 고려하세요.</p>"
             '<div class="table-wrap"><table><tr><th>속성 조합</th><th>모집단 비중</th></tr>' + omitted_rows + "</table></div>"
         )
@@ -430,7 +430,7 @@ def render_html_report(run: dict[str, Any]) -> str:
 <section><h2><span>4</span>표본 구성과 근거</h2>
 {_constraints_table_html(run)}
 {_panel_table_html(panel)}
-<p class="footnote">가상 인물은 결합분포에서 비례 표집한 완전 합성 세그먼트이며, 같은 속성 조합은 대표 응답을 공유합니다.</p>
+<p class="footnote">가상 인물은 결합분포의 서로 다른 셀을 나타내는 완전 합성 세그먼트입니다. 각 비중은 해당 셀 확률이며 동일 속성 조합은 중복하지 않습니다.</p>
 {omitted_html}
 </section>
 <section><h2><span>5</span>가상 인물 × 정책안 반응</h2>{_matrix_table_html(review)}</section>

@@ -73,6 +73,36 @@ test("persona fleet rows appear in chat and open profile cards on the right", as
   await page.screenshot({ path: `${SHOT_DIR}/persona-panel.png` });
 });
 
+test("unique weighted cells render Korean category labels", async ({ page }) => {
+  const { mockAutonomousReview } = await import("./fixtures.mjs");
+  await mockAutonomousReview(page, (completed) => {
+    const panel = completed.run.result.policy_review.panel;
+    panel[0].attributes = [
+      { variable: "월세 부담", variable_code: "rent_burden", value: "월세 부담 20% 미만", code: "under_20" },
+      { variable: "주거 유형", variable_code: "housing_type", value: "오피스텔", code: "officetel" },
+      { variable: "주거 지원 이용", variable_code: "service_use", value: "이용 경험 없음", code: "none" },
+    ];
+    panel[1].attributes = [
+      { variable: "월세 부담", variable_code: "rent_burden", value: "월세 부담 20% 이상", code: "over_20" },
+      { variable: "주거 유형", variable_code: "housing_type", value: "원룸", code: "studio" },
+      { variable: "주거 지원 이용", variable_code: "service_use", value: "이용 경험 있음", code: "used" },
+    ];
+    return completed;
+  });
+  await page.goto("/");
+  await page.getByTestId("question-input").fill("서울 청년 1인 가구 주거 지원 정책을 검토해줘");
+  await page.getByTestId("start-research").click();
+
+  const fleet = page.locator("#policy-review .persona-fleet");
+  await expect(fleet).toContainText("서로 다른 결합 셀 2개");
+  await expect(fleet).toContainText("월세 부담 20% 미만");
+  await expect(fleet).toContainText("오피스텔");
+  await expect(fleet).toContainText("이용 경험 없음");
+  await expect(fleet).not.toContainText("under_20");
+  await fleet.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOT_DIR}/unique-korean-panel.png` });
+});
+
 test("jsonl and markdown artifacts render natively instead of a blank frame", async ({ page }) => {
   await submitPolicy(page);
   await page.locator("#artifact-openers-block .artifact-file", { hasText: "합성 패널·응답" }).click();
