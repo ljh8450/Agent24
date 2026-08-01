@@ -518,11 +518,23 @@ class ResearchAgent:
         collected: list[dict[str, str]] = []
         for query in queries:
             try:
-                collected.extend(search_kosis_tables(query, 3))
+                collected.extend(search_kosis_tables(query, 5))
             except DomainError:
                 continue
-        # 참여비용 같은 금액 표에서는 비율 제약이 나올 수 없으니 비율 표를 우선한다.
-        for table in sorted(collected, key=lambda item: not rate_table(item)):
+        # 플랜 변수를 실제로 공표하는 표가 3개 캡 안에 들어오도록, 표 제목과
+        # 변수 label·정책 초점의 토큰 겹침을 1순위로, 비율 표 여부를 2순위로 정렬한다.
+        plan_tokens = {
+            token
+            for text in [str(plan.get("policy_focus") or "")]
+            + [str(item.get("label") or "") for item in plan.get("proposed_variables") or []]
+            for token in re.split(r"[^0-9A-Za-z가-힣]+", text)
+            if len(token) >= 2 and token not in stopwords
+        }
+
+        def relevance(table: dict[str, str]) -> int:
+            return sum(1 for token in plan_tokens if token in table["table_name"])
+
+        for table in sorted(collected, key=lambda item: (-relevance(item), not rate_table(item))):
             key = (table["org_id"], table["table_id"])
             if key in seen or len(stored) >= 3:
                 continue
