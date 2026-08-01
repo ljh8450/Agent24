@@ -1,76 +1,81 @@
-# 페르소나 복원기 실행 안내
+# E2P Agent (Evidence-to-Persona Agent)
 
-`SPEC.md`의 정책 검토 수직 슬라이스를 구현한 로컬 WebChat 앱이다. 사용자는 정책 의도 한 문장만 입력한다. 에이전트가 대상·가정·대안·권리 검토·한국 증거 검색·원문 스냅샷·정량 제약 gate·PGM·합성 프로필·보고서까지 실행한다. 검증된 정량 제약이 없으면 멈추거나 수치를 꾸미지 않고 `scenario_only`와 `[0,1]` 식별구간으로 완료한다. 합성 패널 인터뷰는 별도 LLM 설정이 있어야 하며, 실제 조사 결과가 아니다.
+공개 통계 근거로 가중 페르소나 패널을 합성하고, 정책·서비스 기획안의 사각지대와 실효성을 사전 검증하는 정책 연구 에이전트입니다. 모든 산출물에 출처·가중치·가정·불확실성이 함께 기록되며, 검증된 정량 근거가 없으면 수치를 지어내지 않고 `scenario_only` 상태로 정직하게 완료합니다.
 
-화면은 실행된 도구를 `검색 → 원문 스냅샷 → 제약 검토 → 분포 계산 → 표집` 순서의 카드형 활동 기록으로 남기고, 실제로 표집된 합성 페르소나만 결합분포 주위의 스웜으로 표시한다. 출처는 도메인 기반의 `korean_official` / `korean_research` / `unreviewed_web` 시작 등급을 가지지만, 등급이 조사설계 검토를 대신하지는 않는다.
+## 해결하려는 문제
 
-페르소나 프로필 이미지는 CC0인 Notionists by Zoish를 DiceBear `notionists` SVG 스타일로 사용한다. 이미지는 합성 ID만으로 결정되며 PGM 속성·정책 반응·실제 인물과 연결되지 않는 `decorative_synthetic` 표현층이다. 출처와 라이선스는 [THIRD_PARTY_ASSETS.md](THIRD_PARTY_ASSETS.md)에 고정한다.
+근거 있는 페르소나를 만들려면 수많은 통계와 보고서를 일일이 찾고, 파편화된 데이터를 검토해 대표 유형과 비중을 직접 정해야 합니다. 일반 LLM에 맡기면 관련 없는 수치를 임의로 이어 붙이거나 근거 없는 가상 설정을 그럴듯하게 지어내는 위험이 있습니다.
 
-## 실행
+E2P Agent는 조사 인력과 예산이 부족한 지자체·NGO를 위해 공개 통계 탐색 → 원문 스냅샷 → 정량 제약 검증 → 가중 패널 합성 → 모의 인터뷰 → 보고서까지를 하나의 실행으로 자동화합니다.
+
+## 동작 구조 — 두 개의 대화 레인
+
+채팅 입력은 먼저 의도 분류를 거칩니다.
+
+| 의도 | 동작 |
+| :--- | :--- |
+| `policy_review` | 자율 검토 파이프라인 실행: 계획 → 한국 신뢰 출처 병렬 탐색 → 원문 스냅샷 → 제약 추출·자동 승인 게이트 → PGM/식별구간 → 가중 패널 → 모의 인터뷰 → 인사이트·보고서 |
+| `clarify` | 검토 요청이 너무 얇을 때 — 실행하지 않고 대상·범위·수단 중 빠진 것만 되물음 |
+| `conversation` | 이전 결과에 대한 후속 질문·일반 대화 — 세션 메모리 기반 실시간 스트리밍 응답 |
+
+오케스트레이션(실행 순서·승인 규칙·안전 차단·통계 계산)은 전부 결정론적 코드입니다. LLM은 계획 설계, 제약 후보 추출, 패널 서술, 모의 인터뷰, 인사이트 작성에만 쓰이고 DB·솔버·네트워크에 직접 접근하지 못합니다.
+
+## 설치와 실행
+
+Python 3.12 이상 필요.
 
 ```bash
-cd /Users/yuchanlee/agent24/project
 python3.12 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m uvicorn app.asgi:app --reload --port 8000
+.venv/bin/python -m uvicorn app.asgi:app --port 8000
 ```
 
-브라우저에서 `http://127.0.0.1:8000`을 연다. 모든 데이터베이스, 출처 스냅샷, run artifact는 `project/data/`에만 저장된다.
+브라우저에서 `http://127.0.0.1:8000`을 엽니다. 데이터베이스, 출처 스냅샷, run artifact는 전부 저장소의 `data/`에만 저장됩니다.
 
-현재 개발 환경에서 검증한 인터프리터는 Python 3.12이다. 의존성이 없는 다른 `python3`가 먼저 잡히면 `python3.12`을 명시하고 위의 프로젝트 전용 virtual environment를 사용한다.
+`.env.example`을 `.env`로 복사해 필요한 값만 채우면 서버 시작 시 자동으로 읽습니다(셸에서 export한 값이 우선).
 
-API는 기본적으로 loopback 요청만 받는다. LAN/프록시로 노출하려면 강한 `GATEWAY_TOKEN`을 설정하고 모든 API 요청에 `Authorization: Bearer <token>`을 보낸다.
+| 환경 변수 | 필수 | 용도 |
+| :--- | :--- | :--- |
+| `LLM_API_URL`, `LLM_API_KEY`, `LLM_MODEL` | 선택 | OpenAI 호환 chat-completions 모델. 없으면 통계·패널·보고서는 그대로 나오고 인터뷰·서술만 생략 |
+| `LLM_MODEL_FINAL` | 선택 | 인사이트·대화에 우선 사용할 상위 모델(실패 시 기본 모델로 폴백) |
+| `PERSONA_RESTORER_DEMO_MODEL=1` | 선택 | 결정론 데모 응답(명시 라벨) — 모델·실제 조사 대체 아님 |
+| `KOSIS_API_KEY`, `DATA_GO_KR_SERVICE_KEY` | 선택 | 한국 공공 통계 커넥터. 키는 요청 URL에만 쓰이고 저장·보고서에는 `[configured]`로 대체 |
+| `GATEWAY_TOKEN` | 선택 | loopback 밖 노출 시 API 인증 토큰(`Authorization: Bearer`) |
 
 ## 검증
 
 ```bash
-.venv/bin/python -m compileall -q app tests
 .venv/bin/ruff check app tests
-.venv/bin/ruff format --check app tests
 .venv/bin/python -m unittest discover -s tests -v
-npm install
-npx playwright install chromium
-npm run test:e2e
+npm install && npx playwright install chromium && npm run test:e2e   # 웹 E2E
 ```
 
-## 워크플로
+## 산출물
 
-1. 채팅에 정책 목표를 한 문장으로 입력한다.
-2. 에이전트가 대상·누락 가정·원안/대안·권리 위험·PGM 변수·검색어를 설계한다. 강압·정치 조작·민감 특성 표적화는 `SAFETY_BLOCKED`로 종료한다.
-3. 한국 공공기관·연구 도메인을 병렬 검색하고 상위 원문을 project 로컬 cache에 hash로 고정한다.
-4. 설정된 LLM이 있으면 수치 후보를 추출한다. deterministic evidence gate는 신뢰 출처, 원문 문장, `exact` 모집단을 모두 만족하는 후보만 자동 승인한다.
-5. 승인 제약이 있으면 feasibility·IPF·LP 식별구간을 계산한다. 없으면 균등 시나리오와 `[0,1]`을 표시해 근거 공백을 보존한다.
-6. 성인 범위에서 Notionists 합성 프로필과 가중 세그먼트를 만들고, LLM이 있을 때만 구조화된 모의 인터뷰를 실행한다.
-7. 우측 Artifacts에 정책 브리프, 패널 JSONL, 인터뷰 JSONL, 증거 JSON, HTML 보고서와 provenance를 남긴다. 우측에는 사용자 입력폼이 없다.
+실행이 끝나면 `data/runs/<run-id>/`에 남습니다.
 
-보고서는 Markdown과 `report.html` 두 형태로 `project/data/runs/<run-id>/`에 저장된다. 정책 패널 검토가 완료된 run에는 `policy_brief.md`, `panel.jsonl`, `interviews.jsonl`, `evidence.json`도 생성된다. HTML은 `pandas` 데이터프레임과 Great Tables 렌더링 하네스를 사용해 실행 요약, 출처 원장, 제약, 식별성, 정책안, 가중 패널, 도구 이력을 정리한다. 모든 artifact는 인증된 gateway 경로에서만 읽는다.
-
-## LLM 설정
-
-`.env.example`의 세 값을 셸 환경변수로 설정한다. OpenAI 호환 chat-completions API를 사용한다.
-
-```bash
-export LLM_API_URL=https://api.openai.com/v1/chat/completions
-export LLM_API_KEY=...
-export LLM_MODEL=...
-```
-
-키 없이 설문 응답을 만들지 않는다. 프론트엔드 검증용으로만 `PERSONA_RESTORER_DEMO_MODEL=1`을 설정할 수 있으며, 결과에는 결정론적 데모임이 표시된다.
-
-## 한국 공공 데이터 연결
-
-KOSIS 통계표는 `KOSIS_API_KEY`를 설정하면 `userStatsId` 또는 직접 통계표 파라미터로 수집한다. 공공데이터포털은 `DATA_GO_KR_SERVICE_KEY`를 설정하면 현재 UI의 복지서비스·국민연금 가입현황 커넥터를 호출할 수 있다. `project/.env`는 서버 시작 시 자동으로 읽으며, 셸에서 명시적으로 export한 값이 우선한다. 키는 요청 URL에서만 사용하고, 저장되는 출처 URL과 보고서에는 `[configured]`로 대체한다.
-
-```bash
-export KOSIS_API_KEY=...
-export DATA_GO_KR_SERVICE_KEY=...
-```
+| 파일 | 내용 |
+| :--- | :--- |
+| `report.html` | 최종 보고서 — 근거·가정, 식별구간, 정책안별 반응, 한계 |
+| `panel.jsonl` | 가중 페르소나 세그먼트(비중·속성·서술)와 세그먼트별 인터뷰 응답 |
+| `evidence.json` | 저장한 출처, 제약, 제외 사유 |
+| `run.json` | 전체 실행 이력 재현용 매니페스트(sha256 포함) |
 
 ## 안전·정확성 경계
 
-- 웹 원문은 `untrusted_external` 증거이며 에이전트 지시가 아니다.
-- `overlap_unknown` 또는 `incompatible` 모집단 제약은 명시적 override 사유 없이는 승인할 수 없다.
-- feasibility가 실패하면 IPF, 식별구간, 페르소나 생성으로 진행하지 않는다.
-- 점추정은 최대엔트로피 구조 가정의 결과이고, LP 식별구간과 구별해서 표시한다.
-- 선택적으로 DAG 후보(`{"id":"interest_by_region","parents":{"interest":["region"]}}`)를 넣어 제약을 만족하는 베이지안 네트워크 점모형의 민감도를 비교할 수 있다. 이 비선형 적합이 실패하면 후보는 `not_fitted`로 보고하며, LP 식별구간은 여전히 구조 가정 없이 계산된다.
-- 미성년자·취약 집단의 1인칭 합성 페르소나는 생성하지 않는다.
+- 정치적 설득·조작 표적화, 강압·배제 설계, 민감 특성 추론 요청은 계획 단계에서 차단됩니다.
+- 웹 원문은 신뢰할 수 없는 데이터로 취급합니다 — 원문 속 지시는 실행되지 않고, 수집은 공인 IP만 허용(SSRF·사설망 차단), 응답 5MB 제한.
+- 모집단이 정확히 일치하고 원문 문장이 있는 제약만 코드 규칙으로 자동 승인됩니다. `overlap_unknown`/`incompatible` 제약은 명시적 override 사유 없이는 쓰이지 않습니다.
+- 점추정은 최대엔트로피 구조 가정의 결과이며 LP 식별구간과 구별해 표시합니다.
+- 페르소나·인터뷰·인사이트는 전부 "완전 합성"으로 라벨되며 실제 개인·여론·인과효과가 아닙니다. 미성년자·취약 집단의 1인칭 합성 페르소나는 만들지 않습니다.
+- API 키는 환경 변수로만 주입되고 저장소·산출물·로그에 기록되지 않습니다.
+
+## 알려진 한계와 다음 단계
+
+- 근거 게이트가 자동 검증 가능한 교차표를 찾지 못하면 결과는 균등 시나리오(`scenario_only`)입니다 — 모집단 추정이 아님이 보고서에 명시됩니다.
+- 모의 인터뷰는 실제 시민 반응이 아니며, 보고서의 검증 계획(소규모 시범·실제 설문)이 항상 후속 단계입니다.
+- 평가 하네스·CI는 준비 중입니다(이슈 #9). 수치가 확정되면 이 절에 기록합니다.
+
+## 라이선스와 자산
+
+MIT — [LICENSE](LICENSE). 아바타는 DiceBear notionists(CC0-1.0), 데이터 출처는 각 공공기관 이용약관을 따릅니다. 자세한 내용은 [THIRD_PARTY_ASSETS.md](THIRD_PARTY_ASSETS.md).

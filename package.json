@@ -1,5 +1,5 @@
 {
-  "name": "persona-restorer-web-tests",
+  "name": "e2p-agent-web-tests",
   "private": true,
   "version": "0.1.0",
   "scripts": {
