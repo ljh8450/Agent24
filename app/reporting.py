@@ -13,7 +13,7 @@ REPORT_NOTICE = (
 RESPONSE_LABELS = {"support": "긍정", "conditional": "조건부", "low_change": "변화 낮음", "decline": "거부"}
 RESPONSE_ORDER = ("support", "conditional", "low_change", "decline")
 # 색약 안전을 위해 색 + 라벨 + 수치를 항상 병행 표기한다.
-RESPONSE_COLORS = {"support": "#2f6f4f", "conditional": "#c07f2d", "low_change": "#8a8a83", "decline": "#a34d4d"}
+RESPONSE_COLORS = {"support": "#0E7A56", "conditional": "#B07818", "low_change": "#3E6FC4", "decline": "#B23A2C"}
 
 
 def _text(value: object) -> str:
@@ -103,12 +103,24 @@ def _md_to_html(markdown: str) -> str:
     return "".join(html)
 
 
-def _tiles_html(panel: list, approved: list, alternatives: list, evidence_status: str) -> str:
-    status_label = "실측 제약 반영" if evidence_status == "feasible" else "균등 시나리오"
+def _tiles_html(review: dict[str, Any], approved: list, identification: dict[str, Any], evidence_status: str) -> str:
+    panel = review.get("panel") or []
+    interviews = review.get("interviews") or []
+    coverage = review.get("panel_coverage")
+    coverage_label = f"{float(coverage) * 100:.1f}%" if coverage is not None else "—"
+    evidence_label = {
+        "feasible": "실측 제약 기반 추정",
+        "scenario_only": "균등 시나리오",
+        "infeasible": "제약 충돌",
+    }.get(evidence_status, evidence_status or "확인 필요")
     tiles = (
-        ("합성 표본", f"{len(panel)}명", "결합분포 비례 표집"),
-        ("승인된 실측 제약", f"{len(approved)}건", status_label),
-        ("비교 정책안", f"{len(alternatives)}개", "동일 패널에서 비교"),
+        ("근거 상태", evidence_label, f"승인 제약 {len(approved)}건 · 추정 여부 명시"),
+        (
+            "가정 없는 식별구간",
+            f"{_probability(identification.get('lower'))} – {_probability(identification.get('upper'))}",
+            "승인된 제약만으로 가능한 범위",
+        ),
+        ("패널 커버리지 · 인터뷰", f"{coverage_label} · {len(interviews)}건", f"합성 패널 {len(panel)}명"),
     )
     return '<div class="tiles">' + "".join(
         f'<div class="tile"><small>{escape(label)}</small><strong>{escape(value)}</strong><span>{escape(hint)}</span></div>'
@@ -124,29 +136,104 @@ def _response_counts(interviews: list, policy_id: str) -> dict[str, int]:
     return counts
 
 
+def _response_shares(review: dict[str, Any], policy_id: str) -> dict[str, float]:
+    weighted = (review.get("responses") or {}).get(policy_id) or {}
+    values = {key: float(weighted.get(key, 0.0)) for key in RESPONSE_ORDER}
+    total = sum(values.values())
+    if total <= 0:
+        counts = _response_counts(review.get("interviews") or [], policy_id)
+        values = {key: float(counts.get(key, 0)) for key in RESPONSE_ORDER}
+        total = sum(values.values())
+    return {key: value / total for key, value in values.items()} if total > 0 else {}
+
+
 def _stacked_bars_html(review: dict[str, Any]) -> str:
-    interviews = review.get("interviews") or []
     alternatives = review.get("alternatives") or []
-    if not interviews or not alternatives:
+    if not alternatives:
         return ""
     legend = "".join(
         f'<span><i style="background:{RESPONSE_COLORS[key]}"></i>{RESPONSE_LABELS[key]}</span>' for key in RESPONSE_ORDER
     )
-    rows = []
+    rows: list[str] = []
+    table_rows: list[str] = []
     for alt in alternatives:
-        counts = _response_counts(interviews, alt.get("id"))
-        total = sum(counts.values()) or 1
+        shares = _response_shares(review, _text(alt.get("id")))
+        if not shares:
+            continue
         segments = "".join(
-            f'<i style="width:{counts[key] / total * 100:.1f}%;background:{RESPONSE_COLORS[key]}"></i>'
+            f'<i style="width:{shares[key] * 100:.2f}%;background:{RESPONSE_COLORS[key]}" '
+            f'title="{escape(RESPONSE_LABELS[key])} {shares[key] * 100:.1f}%" '
+            f'aria-label="{escape(RESPONSE_LABELS[key])} {shares[key] * 100:.1f}%">'
+            f'<b>{escape(RESPONSE_LABELS[key])}</b><span>{shares[key] * 100:.0f}%</span></i>'
             for key in RESPONSE_ORDER
-            if counts.get(key)
+            if shares.get(key)
         )
-        numbers = " · ".join(f"{RESPONSE_LABELS[key]} {counts[key]}명" for key in RESPONSE_ORDER if counts.get(key))
         rows.append(
             f'<div class="bar-row"><span class="bar-label">{escape(_text(alt.get("label")))}</span>'
-            f'<span class="bar">{segments}</span><small>{escape(numbers)}</small></div>'
+            f'<span class="bar" role="img" aria-label="{escape(_text(alt.get("label")))} 반응 분포">{segments}</span></div>'
         )
-    return f'<div class="bars"><div class="legend">{legend}</div>{"".join(rows)}</div>'
+        table_rows.append(
+            f'<tr><th>{escape(_text(alt.get("label")))}</th>'
+            + "".join(f"<td>{shares[key] * 100:.1f}%</td>" for key in RESPONSE_ORDER)
+            + "</tr>"
+        )
+    if not rows:
+        return '<p class="callout warn">모의 인터뷰 반응 분포가 아직 생성되지 않았습니다.</p>'
+    table_head = "".join(
+        f'<th><i style="background:{RESPONSE_COLORS[key]}"></i>{RESPONSE_LABELS[key]}</th>' for key in RESPONSE_ORDER
+    )
+    return (
+        '<div class="response-layout"><div class="bars">'
+        f'<div class="legend">{legend}</div>{"".join(rows)}</div>'
+        '<div class="table-wrap response-table"><table><tr><th>정책안</th>'
+        + table_head
+        + "</tr>"
+        + "".join(table_rows)
+        + "</table></div></div>"
+        '<p class="footnote">가중 합성 패널의 모델 모의 반응입니다. 막대와 표의 비율은 실제 시민 여론이나 정책 효과가 아닙니다.</p>'
+    )
+
+
+def _brief_sections(markdown: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    heading = ""
+    for raw_line in _text(markdown).splitlines():
+        line = raw_line.strip()
+        if line.startswith("## "):
+            heading = line[3:].strip()
+            sections.setdefault(heading, [])
+        elif heading and not line.startswith("# "):
+            sections[heading].append(line)
+    return {key: "\n".join(lines).strip() for key, lines in sections.items()}
+
+
+def _policy_brief_html(review: dict[str, Any], plan: dict[str, Any]) -> str:
+    brief = _brief_sections(review.get("brief") or "")
+    rights = plan.get("rights_review") or {}
+    fallback_rights = _text(rights.get("finding")) or "별도의 고위험 기본권 경고가 탐지되지 않았습니다."
+    if rights.get("issues"):
+        fallback_rights += "\n" + "\n".join(f"- {_text(issue)}" for issue in rights["issues"])
+    cards = (
+        (
+            "판정",
+            brief.get("판정")
+            or "가상 패널 모의 인터뷰 기준으로는 원안 단독 확정보다 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
+        ),
+        ("권리·법률 사전검토", brief.get("권리·법률 사전검토") or fallback_rights),
+        (
+            "사각지대 가설",
+            brief.get("사각지대 가설")
+            or "현재 변수만으로 사각지대를 확정할 수 없습니다. 추가 교차표와 실제 인터뷰로 확인해야 합니다.",
+        ),
+        (
+            "현실 검증 계획",
+            brief.get("현실 검증 계획")
+            or "- 기간: 4주 소규모 시범\n- 비교: 원안 / 상위 대안 / 기존 서비스\n- 수집: 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
+        ),
+    )
+    return '<div class="brief-grid">' + "".join(
+        f'<article class="brief-card"><h3>{escape(title)}</h3>{_md_to_html(body)}</article>' for title, body in cards
+    ) + "</div>"
 
 
 def _constraints_table_html(run: dict[str, Any]) -> str:
@@ -275,14 +362,10 @@ def render_html_report(run: dict[str, Any]) -> str:
     review = result.get("policy_review") or {}
     plan = _latest_plan(run)
     panel = review.get("panel") or []
-    alternatives = review.get("alternatives") or []
     approved = [item for item in run.get("constraints", []) if item.get("review_status") == "approved"]
     evidence_status = _text(result.get("status"))
     identification = result.get("identification") or {}
-    rights = plan.get("rights_review")
-
     insights_html = _md_to_html(review.get("insights") or "") or "<p>모델 인사이트가 생성되지 않은 실행입니다.</p>"
-    verdict = "가상 패널 모의 인터뷰 기준으로는 원안 단독 확정보다, 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다."
     has_proxy = any(item.get("population_compatibility") != "exact" for item in approved)
     status_badge = (
         ("실측 제약 반영" + (" · 광의 대리값 포함" if has_proxy else "") + " (feasible)")
@@ -336,41 +419,26 @@ def render_html_report(run: dict[str, Any]) -> str:
             for item in sensitivity
         ) + "</ul>"
 
-    rights_html = (
-        f"<p>{escape(_text(rights.get('finding')))}</p><ul>"
-        + "".join(f"<li>{escape(_text(issue))}</li>" for issue in rights.get("issues", []))
-        + "</ul>"
-        if rights
-        else "<p>별도의 고위험 기본권 경고가 탐지되지 않았습니다.</p>"
-    )
-
     sections = f"""
-<section><h2><span>1</span>핵심 요약</h2>
-{_tiles_html(panel, approved, alternatives, evidence_status)}
-<p class="verdict">{escape(verdict)}</p>
-{_stacked_bars_html(review)}
+<section class="overview"><h2><span>1</span>정책 사전검증 브리프</h2>
+{_tiles_html(review, approved, identification, evidence_status)}
+{_policy_brief_html(review, plan)}
+{f'<p class="callout warn">{escape(_text(review.get("warning")))}</p>' if review.get("warning") else ""}
 </section>
-<section><h2><span>2</span>종합 인사이트</h2>{insights_html}</section>
-<section><h2><span>3</span>표본 구성과 근거</h2>
+<section><h2><span>2</span>정책안별 반응 분포</h2>{_stacked_bars_html(review)}</section>
+<section><h2><span>3</span>종합 인사이트</h2>{insights_html}</section>
+<section><h2><span>4</span>표본 구성과 근거</h2>
 {_constraints_table_html(run)}
 {_panel_table_html(panel)}
 <p class="footnote">가상 인물은 결합분포에서 비례 표집한 완전 합성 세그먼트이며, 같은 속성 조합은 대표 응답을 공유합니다.</p>
 {omitted_html}
 </section>
-<section><h2><span>4</span>가상 인물 × 정책안 반응</h2>{_matrix_table_html(review)}</section>
-<section><h2><span>5</span>패널 목소리 (합성 모의 인터뷰)</h2>{_voices_html(review) or "<p>모의 인터뷰가 실행되지 않았습니다.</p>"}
+<section><h2><span>5</span>가상 인물 × 정책안 반응</h2>{_matrix_table_html(review)}</section>
+<section><h2><span>6</span>패널 목소리 (합성 모의 인터뷰)</h2>{_voices_html(review) or "<p>모의 인터뷰가 실행되지 않았습니다.</p>"}
 <p class="footnote">모든 인용은 통계 가중 합성 세그먼트의 모델 모의 응답이며 실제 시민 발화가 아닙니다.</p>
 </section>
-<section><h2><span>6</span>권리·법률 사전검토</h2>{rights_html}</section>
-<section><h2><span>7</span>현실 검증 계획</h2>
-<ul>
-<li><strong>기간</strong> 4주 소규모 시범</li>
-<li><strong>비교</strong> 원안 / 상위 대안 / 지원 없음 또는 기존 서비스</li>
-<li><strong>지표</strong> 신규 참여, 실제 사용, 기존 이용자 집중도, 지역·정보 접근 격차, 재이용</li>
-<li><strong>수집</strong> 사전 등록한 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰</li>
-</ul></section>
-<section><h2><span>8</span>출처 원장</h2>{_sources_table_html(run)}</section>
-<section><h2><span>9</span>방법과 한계</h2>
+<section><h2><span>7</span>출처 원장</h2>{_sources_table_html(run)}</section>
+<section><h2><span>8</span>방법과 한계</h2>
 {extra_results}
 <ul>
 <li>선택 구조: <code>{escape(_text(result.get("selected_model")))}</code> · 가정 없는 식별구간 {_probability(identification.get("lower"))} – {_probability(identification.get("upper"))}</li>
@@ -401,20 +469,30 @@ def render_html_report(run: dict[str, Any]) -> str:
   p {{ margin:0 0 10px; }}
   ul {{ margin:0 0 12px; padding-left:22px; }}
   li {{ margin-bottom:5px; }}
-  .tiles {{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:0 0 18px; }}
+  .tiles {{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:0 0 16px; }}
   .tile {{ padding:13px 15px; border:1px solid var(--line); border-radius:10px; background:#fff; }}
   .tile small {{ display:block; color:var(--muted); font-size:11px; }}
-  .tile strong {{ display:block; margin:3px 0 1px; font-size:22px; font-family:Georgia,serif; }}
+  .tile strong {{ display:block; margin:3px 0 1px; font-size:18px; font-family:Georgia,"Apple SD Gothic Neo",serif; line-height:1.35; }}
   .tile span {{ color:var(--muted); font-size:11px; }}
-  .verdict {{ padding:11px 14px; border:1px solid var(--line); border-radius:10px; background:#fff; font-weight:600; }}
-  .bars {{ display:grid; gap:9px; margin:14px 0 4px; }}
-  .legend {{ display:flex; gap:14px; color:var(--muted); font-size:11px; }}
+  .brief-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }}
+  .brief-card {{ padding:14px 16px; border:1px solid var(--line); border-radius:10px; background:#fff; }}
+  .brief-card h3 {{ margin:0 0 7px; color:var(--accent); font-size:13px; }}
+  .brief-card p, .brief-card li {{ margin-bottom:4px; font-size:13px; }}
+  .brief-card ul {{ margin-bottom:0; }}
+  .response-layout {{ display:grid; grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr); gap:18px; align-items:start; }}
+  .bars {{ display:grid; gap:12px; }}
+  .legend {{ display:flex; flex-wrap:wrap; gap:8px 14px; color:var(--muted); font-size:11px; }}
   .legend i {{ display:inline-block; width:10px; height:10px; margin-right:4px; border-radius:2px; vertical-align:-1px; }}
-  .bar-row {{ display:grid; grid-template-columns:minmax(110px,180px) 1fr; gap:12px; align-items:center; }}
-  .bar-row small {{ grid-column:2; color:var(--muted); font-size:11px; }}
-  .bar-label {{ font-size:12px; }}
-  .bar {{ display:flex; height:16px; overflow:hidden; border-radius:4px; background:#eceae0; }}
-  .bar i {{ display:block; height:100%; }}
+  .bar-row {{ display:grid; gap:5px; }}
+  .bar-label {{ font-size:12px; font-weight:600; }}
+  .bar {{ display:flex; min-height:42px; overflow:hidden; border-radius:6px; background:#eceae0; }}
+  .bar i {{ display:flex; min-width:2px; height:42px; padding:3px; color:#fff; flex-direction:column; align-items:center; justify-content:center; font-style:normal; line-height:1.1; text-align:center; text-shadow:0 1px 1px #0005; }}
+  .bar i b {{ font-size:10px; white-space:nowrap; }}
+  .bar i span {{ margin-top:3px; font-size:10px; font-weight:700; }}
+  .response-table {{ margin:0; }}
+  .response-table th, .response-table td {{ padding:7px 8px; white-space:nowrap; text-align:right; }}
+  .response-table th:first-child {{ text-align:left; white-space:normal; }}
+  .response-table i {{ display:inline-block; width:8px; height:8px; margin-right:4px; border-radius:2px; }}
   .table-wrap {{ overflow-x:auto; margin:0 0 14px; }}
   table {{ width:100%; border-collapse:collapse; background:#fff; font-size:12.5px; }}
   th, td {{ padding:8px 11px; border:1px solid var(--line); text-align:left; vertical-align:top; }}
@@ -428,7 +506,8 @@ def render_html_report(run: dict[str, Any]) -> str:
   code {{ font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }}
   footer.page {{ margin-top:52px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:11.5px; }}
   @media print {{ body {{ padding:20px; }} section {{ break-inside:avoid; }} }}
-  @media (max-width:640px) {{ .tiles {{ grid-template-columns:1fr; }} }}
+  @media (max-width:760px) {{ .response-layout {{ grid-template-columns:1fr; }} }}
+  @media (max-width:640px) {{ .tiles, .brief-grid {{ grid-template-columns:1fr; }} .bar i b {{ display:none; }} }}
 </style></head><body>
 <header>
   <span class="eyebrow">EVIDENCE-TO-PERSONA POLICY REVIEW</span>
@@ -443,5 +522,5 @@ def render_html_report(run: dict[str, Any]) -> str:
   <p class="notice">{escape(REPORT_NOTICE)}</p>
 </header>
 {sections}
-<footer class="page">E2P Agent · 로컬 provenance artifact · 합성 패널 {len(panel)}명 · 이벤트 {len(run.get("events", []))}건</footer>
+<footer class="page">E2P Agent · 합성 패널 {len(panel)}명 · 실행 ID {escape(_text(run.get("id")))}</footer>
 </body></html>"""
