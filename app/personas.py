@@ -422,7 +422,8 @@ def decide_next_evidence_action(observation: dict[str, Any]) -> dict[str, Any]:
         "'search' re-searches the Korean public web with 1-3 NEW queries naming concrete statistics or institutions. "
         "'approve_broader' proposes approving national-proxy (broader) candidates with an explicit assumption — only when broader_candidates > 0. "
         "'stop' declares the evidence gap honestly. Never repeat a query listed in tried_kosis_queries or tried_web_queries. "
-        "reason: one short Korean sentence.\n"
+        "Prioritize whatever can constrain the variables in uncovered_variables — name queries after those variables' concepts, "
+        "not the already covered ones. reason: one short Korean sentence.\n"
         f"Observation: {json.dumps(observation, ensure_ascii=False)}"
     )
     try:

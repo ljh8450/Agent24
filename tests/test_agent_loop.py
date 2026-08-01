@@ -91,6 +91,52 @@ class EvidenceRecoveryLoopTests(unittest.TestCase):
         self.assertEqual(len(self.decisions()), 2)
 
 
+class PartialCoverageLoopTests(EvidenceRecoveryLoopTests):
+    def approve_first_variable(self):
+        self.add_broader_candidate()
+        self.agent.approve_constraints(self.run["id"], {"constraint_ids": ["broader_1"]})
+
+    def test_partial_coverage_enters_loop_and_reports_uncovered_variables(self):
+        self.approve_first_variable()
+        captured: dict = {}
+
+        def fake_decide(observation):
+            captured.update(observation)
+            return {"action": "stop", "queries": [], "reason": "t"}
+
+        with patch("app.service.decide_next_evidence_action", side_effect=fake_decide):
+            self.agent._evidence_recovery_loop(self.run["id"], self.plan)
+        variable_ids = [variable["id"] for variable in self.run["variables"]]
+        self.assertEqual(captured["covered_variables"], [variable_ids[0]])
+        self.assertEqual(set(captured["uncovered_variables"]), set(variable_ids[1:]))
+        self.assertEqual(captured["approved_count"], 1)
+
+    def test_loop_noops_when_every_variable_is_covered(self):
+        self.add_broader_candidate()
+        for index, variable in enumerate(self.run["variables"][1:], start=2):
+            self.agent.add_constraint(
+                self.run["id"],
+                {
+                    "id": f"cover_{index}",
+                    "source_id": "src_loop",
+                    "label": f"cover {variable['id']}",
+                    "where": {variable["id"]: variable["categories"][0]},
+                    "relation": "eq",
+                    "value": 0.5,
+                    "population_compatibility": "exact",
+                    "raw_statement": "fixture (PRD_DE 2025)",
+                },
+            )
+        self.agent.approve_constraints(
+            self.run["id"], {"constraint_ids": ["broader_1", "cover_2", "cover_3"]}
+        )
+        self.assertEqual(self.agent._uncovered_variables(self.run["id"]), [])
+        with patch("app.service.decide_next_evidence_action") as decide:
+            approved = self.agent._evidence_recovery_loop(self.run["id"], self.plan)
+        decide.assert_not_called()
+        self.assertEqual(approved, [])
+
+
 COLLECTION_TOOLS = {
     "web.parallel_korean_policy_research",
     "source.fetch_snapshot",

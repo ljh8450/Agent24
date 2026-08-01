@@ -301,8 +301,9 @@ class ResearchAgent:
         llm_ready = all(os.getenv(name) for name in ("LLM_API_URL", "LLM_API_KEY", "LLM_MODEL"))
         self._autonomous_constraint_extraction(run_id, stored_sources, llm_ready)
         approved_ids = self._autonomous_evidence_gate(run_id)
-        if not approved_ids and llm_ready:
-            approved_ids = self._evidence_recovery_loop(run_id, plan)
+        # 부분 근거(일부 변수만 제약)도 루프 대상이다 — 미커버 변수가 남아 있으면 추가 수집을 시도한다(#35).
+        if llm_ready and self._uncovered_variables(run_id):
+            approved_ids = self._evidence_recovery_loop(run_id, plan) or approved_ids
 
         self.store.append_event(run_id, "tool.started", {"tool": "statistics.identification_bounds"})
         if approved_ids:
@@ -425,6 +426,17 @@ class ResearchAgent:
             "artifacts": {"html_report": report["report_url"], **report["downloads"]},
         }
 
+    def _uncovered_variables(self, run_id: str) -> list[str]:
+        """승인 제약이 하나도 조건으로 삼지 않은 변수 id 목록."""
+        run = self.store.get_run(run_id)
+        covered = {
+            key
+            for item in run["constraints"]
+            if item.get("review_status") == "approved"
+            for key in (item.get("where") or {})
+        }
+        return [variable["id"] for variable in run["variables"] if variable["id"] not in covered]
+
     def _evidence_recovery_loop(self, run_id: str, plan: dict[str, Any]) -> list[str]:
         """Observe the empty evidence gate and let the decision tool pick the next action.
 
@@ -438,12 +450,19 @@ class ResearchAgent:
         tried_web = [str(query) for query in plan.get("evidence_queries") or []]
         tried_kosis = [str(term) for term in plan.get("kosis_search_terms") or []]
         approved: list[str] = []
+        run = self.store.get_run(run_id)
+        variable_ids = [variable["id"] for variable in run["variables"]]
         for round_number in (1, 2):
             constraints = self.store.list_constraints(run_id)
+            uncovered = self._uncovered_variables(run_id)
+            if not uncovered:
+                break
             observation = {
                 "round": round_number,
                 "rounds_left": 2 - round_number,
-                "approved_count": 0,
+                "approved_count": sum(1 for item in constraints if item.get("review_status") == "approved"),
+                "covered_variables": [identifier for identifier in variable_ids if identifier not in uncovered],
+                "uncovered_variables": uncovered,
                 "candidate_count": len(constraints),
                 "broader_candidates": sum(
                     1
@@ -466,7 +485,7 @@ class ResearchAgent:
                 break
             if action == "approve_broader":
                 approved = self._autonomous_evidence_gate(run_id, allow_broader=True)
-                if approved:
+                if not self._uncovered_variables(run_id):
                     break
                 continue
             fresh = [query for query in decision["queries"] if query not in tried_web and query not in tried_kosis][:3]
@@ -497,7 +516,7 @@ class ResearchAgent:
             if new_sources:
                 self._autonomous_constraint_extraction(run_id, new_sources, True)
             approved = self._autonomous_evidence_gate(run_id)
-            if approved:
+            if not self._uncovered_variables(run_id):
                 break
         return approved
 
