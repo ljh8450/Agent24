@@ -391,8 +391,10 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
     focus = str(raw.get("policy_focus", "")).strip()
     if not focus or not queries:
         return None
+    reviewed_policy = str(raw.get("reviewed_policy") or "").strip() or None
     return {
         "request_type": request_type,
+        "reviewed_policy": reviewed_policy,
         "policy_focus": focus,
         "target_population": str(raw.get("target_population", "")).strip(),
         "variables": variables,
@@ -452,15 +454,32 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
                 "국회입법조사처 선거권 연령 평등선거",
                 f"KOSIS {target} 연령별 인구 대학생",
             ]
+    # 입력은 정책 그 자체가 아닐 수 있다("가능성 조사해줘" 같은 요청문) — LLM이 재구성한
+    # reviewed_policy가 있으면 그것을 원안으로, 정책 내용이 식별되지 않으면 원안을 만들지 않는다.
+    reviewed_policy = (llm_plan or {}).get("reviewed_policy")
+    if llm_plan is not None:
+        original_statement = str(reviewed_policy or "").strip()
+    else:
+        original_statement = question  # 키워드 폴백은 판별 수단이 없어 기존 동작 유지
+    original_alternatives = (
+        [
+            {
+                "id": "original",
+                "label": (
+                    original_statement if len(original_statement) <= 26 else original_statement[:26].rstrip() + "…"
+                )
+                + " (검토 요청안)",
+                "description": original_statement,
+                "hypothesis": "검토를 요청받은 정책의 수혜 분포와 접근 장벽을 가상 패널에서 비교합니다.",
+                "risk": "실제 시민 반응이나 인과효과를 뜻하지 않습니다.",
+                "origin": "user_input",
+            }
+        ]
+        if original_statement
+        else []
+    )
     alternatives = [
-        {
-            "id": "original",
-            "label": (question if len(question) <= 26 else question[:26].rstrip() + "…") + " (검토 요청안)",
-            "description": question,
-            "hypothesis": "검토를 요청받은 정책의 수혜 분포와 접근 장벽을 가상 패널에서 비교합니다.",
-            "risk": "실제 시민 반응이나 인과효과를 뜻하지 않습니다.",
-            "origin": "user_input",
-        },
+        *original_alternatives,
         *[
             {
                 "id": f"alternative_{index}",

@@ -177,6 +177,28 @@ class PolicyReviewTests(unittest.TestCase):
         plan = build_policy_plan("고객 페르소나 관련 요청", "f", llm_raw={**base, "request_type": "nonsense"})
         self.assertEqual(plan["request_type"], "audience_understanding")
 
+    def test_review_request_without_policy_content_registers_no_original_alternative(self):
+        base = {
+            "policy_focus": "f",
+            "target_population": "t",
+            "variables": [
+                {"id": "a", "label": "가", "categories": ["x", "y"]},
+                {"id": "b", "label": "나", "categories": ["p", "q"]},
+            ],
+            "alternatives": [{"label": "안1"}, {"label": "안2"}],
+            "evidence_queries": ["질의"],
+        }
+        # 요청문만 있고 정책 내용이 없으면(reviewed_policy null) 원안을 만들지 않는다
+        plan = build_policy_plan("해당정책 가능성을 조사해줘", "f", llm_raw={**base, "reviewed_policy": None})
+        self.assertNotIn("original", [item["id"] for item in plan["alternatives"]])
+        self.assertEqual(len(plan["alternatives"]), 2)
+        # 재구성된 정책이 있으면 그것이 원안 라벨이 된다
+        plan = build_policy_plan(
+            "해당정책 가능성을 조사해줘", "f", llm_raw={**base, "reviewed_policy": "청년 문화비 월 3만원 지원"}
+        )
+        original = next(item for item in plan["alternatives"] if item["id"] == "original")
+        self.assertIn("청년 문화비", original["label"])
+
     def test_audience_request_skips_interviews_and_returns_fieldwork_questions(self):
         with (
             patch("app.service.search_public_web", return_value=[]),
