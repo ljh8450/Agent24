@@ -522,7 +522,7 @@ class ResearchAgent:
                 "broader_candidates": sum(
                     1
                     for item in constraints
-                    if item.get("population_compatibility") == "broader"
+                    if item.get("population_compatibility") in {"broader", "restricted"}
                     and item.get("review_status") == "candidate"
                     and str(item.get("raw_statement", "")).strip()
                 ),
@@ -781,7 +781,8 @@ class ResearchAgent:
         )
 
     def _autonomous_evidence_gate(self, run_id: str, allow_broader: bool = False) -> list[str]:
-        allowed_compat = {"exact", "broader"} if allow_broader else {"exact"}
+        # 근사 승인: 광의(broader)든 협의(restricted, 예: 독거노인 ⊂ 고령자)든 가정 명시 후 대용 가능.
+        allowed_compat = {"exact", "broader", "restricted"} if allow_broader else {"exact"}
         self.store.append_event(run_id, "tool.started", {"tool": "review.auto_approve_exact_constraints"})
         run = self.store.get_run(run_id)
         trusted_sources = {
@@ -815,7 +816,7 @@ class ResearchAgent:
         chosen = list(selected_by_cell.values())
         selected = [item["id"] for item in chosen]
         if selected:
-            broader_note = "전국(광의) 모집단 통계를 대상 집단의 근사로 사용한다는 명시적 가정 아래 자동 승인됨"
+            broader_note = "모집단이 정확히 일치하지 않는 공표 통계(광의·협의)를 대상 집단의 근사로 사용한다는 명시적 가정 아래 자동 승인됨"
             self.approve_constraints(
                 run_id,
                 {
@@ -823,7 +824,7 @@ class ResearchAgent:
                     "override_notes": {
                         item["id"]: broader_note
                         for item in chosen
-                        if item.get("population_compatibility") == "broader"
+                        if item.get("population_compatibility") in {"broader", "restricted"}
                     },
                 },
             )

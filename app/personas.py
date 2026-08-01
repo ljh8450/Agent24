@@ -466,7 +466,7 @@ def decide_next_evidence_action(observation: dict[str, Any]) -> dict[str, Any]:
         '{"action": "kosis"|"search"|"approve_broader"|"stop", "queries": [...], "reason": "..."}.\n'
         "Rules: 'kosis' queries KOSIS OpenAPI with 1-3 short Korean topic keywords (only when kosis_available). "
         "'search' re-searches the Korean public web with 1-3 NEW queries naming concrete statistics or institutions. "
-        "'approve_broader' proposes approving national-proxy (broader) candidates with an explicit assumption — only when broader_candidates > 0. "
+        "'approve_broader' proposes approving proxy-population candidates (broader OR restricted, e.g. 독거노인 ⊂ 고령자) with an explicit assumption — strongly prefer this over 'stop' whenever broader_candidates > 0. "
         "'stop' declares the evidence gap honestly. Never repeat a query listed in tried_kosis_queries or tried_web_queries. "
         "Prioritize whatever can constrain the variables in uncovered_variables — name queries after those variables' concepts, "
         "not the already covered ones. reason: one short Korean sentence.\n"
