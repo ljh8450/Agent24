@@ -77,6 +77,8 @@ class WorkflowTests(unittest.TestCase):
             self.run["id"], {"estimand": {"numerator": {"interest": "high"}, "denominator": {"region": "daejeon"}}}
         )
         self.assertEqual(computed["result"]["status"], "feasible")
+        self.assertEqual(computed["result"]["cross_constraint_count"], 0)
+        self.assertIn("독립으로 처리", computed["result"]["assumption"])
         sampled = self.agent.create_personas(
             self.run["id"], {"adult_population_confirmed": True, "count": 4, "seed": 7}
         )

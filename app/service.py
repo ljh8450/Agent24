@@ -1052,7 +1052,11 @@ class ResearchAgent:
             str(payload.get("selected_model", "maximum_entropy")),
         )
         result["estimand"] = {"numerator": numerator, "denominator": denominator}
-        result["assumption"] = "maximum entropy: 관측하지 않은 고차 상호작용을 0으로 두는 명시적 구조 가정"
+        result["assumption"] = "maximum entropy: 관측하지 않은 고차 상호작용을 0으로 두는 명시적 구조 가정" + (
+            ""
+            if result.get("cross_constraint_count")
+            else " · 승인 제약이 모두 단일 변수 조건이라 변수 간 상관은 관측되지 않았고 독립으로 처리됩니다 — 조합 비중은 주변분포의 곱입니다."
+        )
         self.store.update_run(run_id, result=result, estimand=result["estimand"], status="running")
         self.store.append_event(
             run_id, "statistics.completed", {"status": result["status"], "constraint_count": len(approved)}

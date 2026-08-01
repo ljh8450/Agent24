@@ -369,4 +369,5 @@ def estimate(
         "identification": bounds,
         "structure_sensitivity": sensitivity,
         "constraint_count": len(constraints),
+        "cross_constraint_count": sum(1 for item in constraints if len(item.where) > 1),
     }
