@@ -47,12 +47,48 @@ STREAM_TOOL_TEXT = {
     "llm.extract_constraint_candidates": "원문의 모집단과 수치를 PGM 제약 후보로 대조하고 있습니다.",
     "kosis.statistics_openapi": "KOSIS OpenAPI에서 공표 비율 통계표를 내려받고 있습니다.",
     "review.auto_approve_exact_constraints": "모집단이 정확히 일치하는 제약만 코드 규칙으로 자동 승인하고 있습니다. 사람 검토가 아닙니다.",
+    "agent.evidence_round": "현재 근거 상태를 관찰하고 추가 수집 라운드를 시작했습니다.",
+    "agent.decision": "관찰한 근거 상태를 바탕으로 다음 수집 행동을 결정했습니다.",
     "statistics.identification_bounds": "승인된 근거의 식별구간과 결합분포를 계산하고 있습니다.",
     "personas.sample_joint_distribution": "결합분포에서 완전 합성 페르소나 패널을 구성하고 있습니다.",
     "llm.narrate_personas": "식별된 속성 범위 안에서 페르소나 설명을 생성하고 있습니다.",
     "policy.weighted_panel_interviews": "권리·법률 쟁점과 정책 대안을 같은 패널에서 검토하고 있습니다.",
     "report.write_provenance": "근거, 계산, 패널, 한계를 재현 가능한 보고서로 묶고 있습니다.",
 }
+
+
+def _stream_event_update(item: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(item.get("type", ""))
+    payload = item.get("payload") or {}
+    if event_type.startswith("tool."):
+        tool = str(payload.get("tool", ""))
+        return {
+            "tool": tool,
+            "status": event_type.removeprefix("tool."),
+            "text": STREAM_TOOL_TEXT.get(tool, "실행 메타데이터를 처리하고 있습니다."),
+            "code": payload.get("code"),
+        }
+    if event_type not in {"agent.evidence_round", "agent.decision"}:
+        return None
+
+    reason = str(payload.get("reason") or "")
+    queries = [str(query) for query in (payload.get("queries") or []) if str(query).strip()]
+    event_identity = item.get("created_at") or f"{payload.get('round', '')}:{payload.get('action', '')}:{'|'.join(queries)}"
+    text = reason or STREAM_TOOL_TEXT[event_type]
+    if event_type == "agent.decision":
+        text = f"증거 판단 {payload.get('round')}라운드: {payload.get('action')} — {text}"
+    elif payload.get("round") is not None:
+        text = f"증거 수집 {payload.get('round')}라운드: {text}"
+    return {
+        "tool": event_type,
+        "event_id": f"{event_type}:{event_identity}",
+        "status": "completed",
+        "text": text,
+        "round": payload.get("round"),
+        "action": payload.get("action"),
+        "reason": reason or None,
+        "queries": queries,
+    }
 
 
 def _json(status: int, value: Any) -> tuple[int, bytes, str]:
@@ -209,29 +245,12 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
                     await _send_sse(send, "message.stream.start", {"phase": "insight"})
                 await _send_sse(send, "message.delta", {"delta": str(payload.get("delta", ""))})
                 continue
-            if kind == "agent.decision":
-                caption = f"증거 판단 {payload.get('round')}라운드: {payload.get('action')} — {payload.get('reason', '')}"
-                await _send_sse(
-                    send, "tool.update", {"tool": "agent.decision", "status": "completed", "text": caption, "code": None}
-                )
-                await _send_sse(send, "message.stream.start", {"phase": "tool"})
-                await _send_text_delta(send, caption)
+            update = _stream_event_update(item)
+            if not update:
                 continue
-            if not kind.startswith("tool."):
-                continue
-            tool = str(payload.get("tool", ""))
-            await _send_sse(
-                send,
-                "tool.update",
-                {
-                    "tool": tool,
-                    "status": kind.removeprefix("tool."),
-                    "text": STREAM_TOOL_TEXT.get(tool, "실행 메타데이터를 처리하고 있습니다."),
-                    "code": payload.get("code"),
-                },
-            )
-            if kind == "tool.completed":
-                caption = STREAM_TOOL_TEXT.get(tool)
+            await _send_sse(send, "tool.update", update)
+            if kind == "tool.completed" or kind == "agent.decision":
+                caption = str(update.get("text", ""))
                 if caption:
                     await _send_sse(send, "message.stream.start", {"phase": "tool"})
                     await _send_text_delta(send, caption)
