@@ -291,10 +291,10 @@ def _panel_table_html(panel: list) -> str:
             + escape(
                 " · ".join(_text(attr.get("value_label") or attr.get("value")) for attr in segment.get("attributes", []))
             )
-            + f"</td><td>{escape(_text(segment.get('weight_display')))}</td><td>{len(names)}명</td></tr>"
+            + f"</td><td>{len(names)}명</td></tr>"
         )
     return (
-        '<div class="table-wrap"><table><tr><th>가상 인물</th><th>표집된 속성</th><th>세그먼트 비중</th><th>표본 인원</th></tr>'
+        '<div class="table-wrap"><table><tr><th>가상 인물</th><th>표집된 속성</th><th>표본 인원</th></tr>'
         + rows
         + "</table></div>"
     )
