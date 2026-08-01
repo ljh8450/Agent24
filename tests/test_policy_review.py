@@ -115,6 +115,12 @@ class PolicyReviewTests(unittest.TestCase):
         review = build_policy_plan("서울 1인 가구를 위한 주말 커뮤니티 서비스를 검토해줘", "fallback")
         self.assertEqual(review["request_type"], "plan_review")
 
+        # 페르소나 언급이 있어도 '예상 반응'을 요구하면 인터뷰가 필요한 검토 요청이다.
+        mixed = build_policy_plan(
+            "고령자 이동 지원 서비스를 기획하고 있다. 주요 이용자 페르소나와 예상 반응을 만들어줘", "fallback"
+        )
+        self.assertEqual(mixed["request_type"], "plan_review")
+
     def test_llm_plan_preserves_category_codes_and_korean_labels(self):
         plan = build_policy_plan(
             "서울 청년 1인 가구 주거 지원 정책을 검토해줘",
