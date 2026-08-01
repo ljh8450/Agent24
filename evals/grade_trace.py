@@ -35,7 +35,9 @@ class Grade:
 
 def _events(run: dict[str, Any]) -> list[dict[str, Any]]:
     events = run.get("events")
-    if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+    if not isinstance(events, list) or not all(
+        isinstance(event, dict) and isinstance(event.get("type"), str) for event in events
+    ):
         raise ValueError("run.events must be a list of objects")
     return events
 
@@ -112,6 +114,25 @@ def grade_trace(case: dict[str, Any], run: dict[str, Any]) -> Grade:
         checks.append("outcome")
     else:
         failures.append(f"outcome mismatch: expected={expected_status} actual={actual_status}")
+
+    terminal_events = {"run.completed", "run.failed", "run.timeout", "completion.partial", "policy.blocked"}
+    has_terminal_event = any(event.get("type") in terminal_events for event in events)
+    if has_terminal_event:
+        checks.append("terminal_event")
+    else:
+        failures.append("terminal event is missing")
+
+    expected_terminal = {
+        "SUCCESS": {"run.completed"},
+        "PARTIAL": {"completion.partial"},
+        "BLOCKED": {"policy.blocked", "run.failed"},
+        "UNSAFE": {"policy.blocked", "run.failed"},
+        "TIMEOUT": {"run.timeout", "tool.failed"},
+    }.get(expected_status, set())
+    if expected_terminal and any(event.get("type") in expected_terminal for event in events):
+        checks.append("terminal_status_consistency")
+    elif expected_terminal:
+        failures.append(f"terminal event does not support outcome={expected_status}")
 
     expected_intent = expected.get("intent")
     if expected_intent is not None:

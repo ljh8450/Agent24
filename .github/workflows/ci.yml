@@ -31,3 +31,6 @@ jobs:
 
       - name: Run deterministic evaluations
         run: uv run python evals/run_evals.py --cases evals/cases.jsonl --fixtures evals/fixtures.json
+
+      - name: Run holdout evaluations
+        run: uv run python evals/run_evals.py --cases evals/cases_holdout.jsonl --fixtures evals/fixtures_holdout.json --minimum-cases 6

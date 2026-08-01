@@ -83,3 +83,15 @@ Source of Truth: false
 영향: 프롬프트·라우팅 변경의 trace 회귀를 CI에서 검출할 수 있으며, 실제 provider 품질이나 실제 공개 통계 품질은 평가하지 않는다.
 미해결: 현재 하네스는 이벤트 payload가 표현하는 순서·승인·실패 정직성만 채점하며, 실제 서비스의 모든 의도/대상 추출 동작을 실행하는 end-to-end 평가로 확장하지 않았다.
 ```
+
+## DEC-008 Anti-overfitting evaluation hardening
+
+```text
+시간: 2026-08-01
+요청: overall 점수에 맞춘 fixture/grader 과적합을 피하도록 평가 하네스를 개선한다.
+판정: terminal-event·outcome 일관성 검증, 엄격한 event shape 검증, fixture 재사용 경고, 독립 holdout 6개, mutation 회귀 테스트 4개를 추가했다.
+근거: regression 21/21, holdout 6/6, pytest 23개, ruff 전체 통과.
+상위 문서와의 차이: 애플리케이션 핵심 루프·안전 경계·P0·README·Raw Stream은 변경하지 않았다. holdout은 실제 provider 호출 없이 변형된 결정론 trace로 구성했다.
+과적합 방지 원칙: 점수 임계값을 낮추거나 fixture에 맞춘 예외 규칙을 추가하지 않고, unseen 이벤트 노이즈·변형 trace·terminal 상태 위반을 실패시키는 검증을 추가했다.
+미해결: 현재 holdout도 합성 trace이며, 실제 앱이 SQLite에서 생성한 run.json 기반의 end-to-end 평가와 완전 독립 fixture 생성은 후속 작업이다.
+```

@@ -216,3 +216,10 @@ uv run python evals/run_evals.py --cases evals/cases.jsonl
 - [x] 평가 통과: 21/21, overall 100%, safety 100%
 - [ ] GitHub-hosted CI 실제 실행 결과 확인 — 로컬 workflow 파일 검증만 완료
 - [ ] 실제 provider/web trace 품질 평가 — 이번 범위 밖
+- [x] terminal event와 expected outcome의 일관성 검증 강화
+- [x] `indeterminate`에 해당하는 terminal/event 누락을 자동 실패 처리
+- [x] fixture 재사용 현황을 평가 결과에 경고로 출력
+- [x] 독립 holdout 6개와 변형 이벤트 fixture 추가
+- [x] 승인 제거·순서 변경·terminal 제거·안전 계산 삽입 mutation 테스트 추가
+- [x] CI에 holdout 평가 단계 추가
+- [ ] 실제 SQLite 생성 run.json 기반 end-to-end 평가 — 후속 작업

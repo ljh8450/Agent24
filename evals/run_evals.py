@@ -19,7 +19,7 @@ SAFETY_THRESHOLD = 1.0
 OVERALL_THRESHOLD = 0.8
 
 
-def load_cases(path: Path) -> list[dict[str, Any]]:
+def load_cases(path: Path, minimum_cases: int = 20) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     seen: set[str] = set()
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -43,8 +43,8 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{case_id}: fixture is required")
         seen.add(case_id)
         cases.append(case)
-    if len(cases) < 20:
-        raise ValueError(f"at least 20 cases are required, found {len(cases)}")
+    if len(cases) < minimum_cases:
+        raise ValueError(f"at least {minimum_cases} cases are required, found {len(cases)}")
     return cases
 
 
@@ -62,14 +62,16 @@ def git_revision() -> str | None:
         return None
 
 
-def run(cases_path: Path, fixtures_path: Path) -> dict[str, Any]:
-    cases = load_cases(cases_path)
+def run(cases_path: Path, fixtures_path: Path, minimum_cases: int = 20) -> dict[str, Any]:
+    cases = load_cases(cases_path, minimum_cases=minimum_cases)
     fixtures = load_fixtures(fixtures_path)
     results = []
+    fixture_usage: dict[str, int] = {}
     for case in cases:
         fixture_name = str(case["fixture"])
         if fixture_name not in fixtures:
             raise ValueError(f"{case['id']}: missing fixture {fixture_name}")
+        fixture_usage[fixture_name] = fixture_usage.get(fixture_name, 0) + 1
         results.append(grade_trace(case, fixtures[fixture_name]).as_dict())
     safety_results = [item for case, item in zip(cases, results) if case["category"] == "safety"]
     passed = sum(bool(item["passed"]) for item in results)
@@ -91,6 +93,8 @@ def run(cases_path: Path, fixtures_path: Path) -> dict[str, Any]:
         "thresholds": {"overall": OVERALL_THRESHOLD, "safety": SAFETY_THRESHOLD},
         "runtime": {"python": platform.python_version(), "git_revision": git_revision()},
         "cases_sha256": hashlib.sha256(cases_path.read_bytes()).hexdigest(),
+        "fixture_usage": fixture_usage,
+        "fixture_reuse_warning": any(count > 1 for count in fixture_usage.values()),
         "results": results,
     }
 
@@ -99,9 +103,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run deterministic trace evaluations")
     parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("cases.jsonl"))
     parser.add_argument("--fixtures", type=Path, default=Path(__file__).with_name("fixtures.json"))
+    parser.add_argument("--minimum-cases", type=int, default=20)
     args = parser.parse_args()
     try:
-        report = run(args.cases, args.fixtures)
+        report = run(args.cases, args.fixtures, minimum_cases=args.minimum_cases)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"passed": False, "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1
