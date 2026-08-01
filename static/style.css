@@ -309,3 +309,6 @@ aside.study-inspector { display:none !important; }
   .workbench-shell.is-sidebar-collapsed .new-study-button { justify-content:center; padding:0; }
 }
 
+
+.attach-chip { display:inline-flex; align-items:center; gap:6px; margin:0 0 6px 14px; padding:3px 10px; border:1px solid var(--border-light); border-radius:999px; font-size:11px; color:var(--text-tertiary); background:#161616; }
+.attach-chip button { background:none; border:0; color:inherit; cursor:pointer; font-size:12px; }
