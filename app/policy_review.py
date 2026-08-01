@@ -40,7 +40,7 @@ THEMES: tuple[dict[str, Any], ...] = (
         ],
         "rights_review": {
             "severity": "high",
-            "finding": "선거권 연령을 특정 지역·학생 집단에만 다르게 적용하는 원안은 기본권·평등선거·법률유보 검토가 선행되어야 합니다.",
+            "finding": "선거권 연령을 특정 지역·학생 집단에만 다르게 적용하는 정책안은 기본권·평등선거·법률유보 검토가 선행되어야 합니다.",
             "issues": [
                 "거주지와 학생 신분을 기준으로 한 선거권 차등의 합리적 이유",
                 "공직선거법상 선거권 연령과 지방자치단체의 권한 범위",
@@ -285,7 +285,7 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
         category_labels: dict[str, str] = {}
         for category in categories_raw:
             if isinstance(category, dict):
-                # 플랜 모델이 {code,label} 객체로 주는 경우 — str(dict)로 삼키면 하류 전체가 오염된다.
+                # 플랜 모델이 {code,label} 객체로 주는 경우 — code는 계산용, label은 표시용으로 분리 보존한다.
                 code = str(category.get("code") or category.get("id") or category.get("label") or "").strip()
                 category_label = str(category.get("label") or code).strip()
             else:
@@ -394,9 +394,9 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
     alternatives = [
         {
             "id": "original",
-            "label": "원안",
+            "label": (question if len(question) <= 26 else question[:26].rstrip() + "…") + " (검토 요청안)",
             "description": question,
-            "hypothesis": "원안의 수혜 분포와 접근 장벽을 가상 패널에서 비교합니다.",
+            "hypothesis": "검토를 요청받은 정책의 수혜 분포와 접근 장벽을 가상 패널에서 비교합니다.",
             "risk": "실제 시민 반응이나 인과효과를 뜻하지 않습니다.",
             "origin": "user_input",
         },
@@ -499,52 +499,6 @@ def weighted_segments(
     ]
 
 
-def sampled_segments(
-    states: list[dict[str, str]],
-    distribution: list[float],
-    size: int = 12,
-    evidence_level: str = "partial_estimate",
-) -> list[dict[str, Any]]:
-    """Draw a proportional synthetic sample: high-share cells appear multiple times, tiny cells dilute away.
-
-    Deterministic largest-remainder quotas keep the panel composition faithful to the joint
-    distribution, so plain answer counts over the sample ARE the weighted statistics.
-    """
-    total = sum(float(weight) for weight in distribution) or 1.0
-    shares = [max(0.0, float(weight)) / total for weight in distribution]
-    quotas = [share * size for share in shares]
-    counts = [int(quota) for quota in quotas]
-    for index in sorted(range(len(quotas)), key=lambda i: quotas[i] - counts[i], reverse=True)[: size - sum(counts)]:
-        counts[index] += 1
-    boundary = (
-        "표본 구성은 승인된 정량 제약이 없어 균등 시나리오 분포에서 비례 표집한 것입니다. 모집단 추정치가 아닙니다."
-        if evidence_level == "scenario_only"
-        else "표본 구성은 승인된 제약과 선택한 PGM 점모형의 결합분포에서 비례 표집한 것이며 실제 개인이나 대표 표본이 아닙니다."
-    )
-    personas: list[dict[str, Any]] = []
-    for state_index in sorted(range(len(states)), key=lambda i: shares[i], reverse=True):
-        for _ in range(counts[state_index]):
-            position = len(personas) + 1
-            pid = f"P{position:02d}"
-            personas.append(
-                {
-                    "id": pid,
-                    "display_name": SYNTHETIC_SEGMENT_NAMES[(position - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
-                    "avatar": notionists_avatar(pid),
-                    "attributes": [
-                        {"variable": key, "value": value, "tag": "model_weighted"}
-                        for key, value in states[state_index].items()
-                    ],
-                    "weight": 1.0 / size,
-                    "weight_display": f"{shares[state_index] * 100:.1f}%",
-                    "cell_share": shares[state_index],
-                    "evidence_level": evidence_level,
-                    "boundary": boundary,
-                }
-            )
-    return personas
-
-
 def summarize_panel_interviews(panel: list[dict[str, Any]], interviews: list[dict[str, Any]]) -> dict[str, Any]:
     by_option: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for interview in interviews:
@@ -619,7 +573,7 @@ def policy_brief(
                 "",
                 f"## 대상\n{plan['target_population']}",
                 "",
-                "## 판정\n가상 패널 모의 인터뷰 기준으로는 원안 단독 확정보다, 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
+                "## 판정\n가상 패널 모의 인터뷰 기준으로는 요청받은 정책안 단독 확정보다, 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
                 "",
                 *([insights.replace("### ", "## "), ""] if insights else []),
                 "## 우선 검토안\n"
@@ -651,7 +605,7 @@ def policy_brief(
                     else "현재 PGM 변수만으로 사각지대를 특정할 수 없습니다. 추가 교차표와 실제 인터뷰가 필요합니다."
                 ),
                 "",
-                "## 현실 검증 계획\n- 기간: 4주 소규모 시범\n- 비교: 원안 / 상위 대안 / 지원 없음 또는 기존 서비스\n- 지표: 신규 참여, 실제 사용, 기존 이용자 집중도, 지역·정보 접근 격차, 재이용\n- 수집: 사전 등록한 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
+                "## 현실 검증 계획\n- 기간: 4주 소규모 시범\n- 비교: 검토 요청안 / 상위 대안 / 지원 없음 또는 기존 서비스\n- 지표: 신규 참여, 실제 사용, 기존 이용자 집중도, 지역·정보 접근 격차, 재이용\n- 수집: 사전 등록한 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰",
                 "",
                 "> 이 문서는 통계 기반 가상 패널의 모의 인터뷰입니다. 실제 시민의 찬성률·행동·정책 효과가 아닙니다.",
             ]

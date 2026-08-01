@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -157,7 +158,7 @@ def synthesize_policy_insights(
             "id": segment["id"],
             "name": segment.get("display_name") or segment["id"],
             "weight": segment.get("weight_display"),
-            "attributes": {item["variable"]: item["value"] for item in segment.get("attributes", [])},
+            "attributes": {item["variable"]: item.get("value_label") or item["value"] for item in segment.get("attributes", [])},
         }
         for segment in panel
     ]
@@ -325,8 +326,46 @@ def converse_with_memory(question: str, memory: list[dict[str, str]], context: s
     return reply.strip()
 
 
+def _published_table_preview(question: str) -> list[str]:
+    """질문 토큰으로 KOSIS 통합검색을 가볍게 훑어 실존 표 제목을 모은다.
+
+    플랜 변수를 '찾을 수 있는' 개념에 정합시키기 위한 힌트다. 키가 없거나
+    검색이 실패하면 빈 목록 — 플랜은 기존 방식 그대로 동작한다(#37).
+    """
+    if not os.getenv("KOSIS_API_KEY"):
+        return []
+    from .sources import search_kosis_tables
+
+    tokens: list[str] = []
+    for raw in re.split(r"[^0-9A-Za-z가-힣]+", question):
+        token = re.sub(r"(을|를|은|는|의|에서|에게|으로|로)$", "", raw)
+        if len(token) >= 2 and token not in tokens:
+            tokens.append(token)
+    titles: list[str] = []
+    for token in tokens[:4]:
+        try:
+            for table in search_kosis_tables(token, 4):
+                title = f"{table['survey_name']} — {table['table_name']}"
+                if title not in titles:
+                    titles.append(title)
+        except DomainError:
+            continue
+    return titles[:12]
+
+
 def llm_policy_plan(question: str) -> dict[str, Any]:
     """Ask the configured model to design question-specific, statistics-measurable plan pieces."""
+    preview = _published_table_preview(question)
+    preview_block = (
+        "REAL published KOSIS tables found for this question — treat this list as your MENU, not a hint: "
+        "every variable MUST be anchored to one listed table (pick the measure that table publishes, name the anchor "
+        "table in that variable's evidence_query, and align kosis_search_terms with the anchoring surveys). "
+        "You may invent at most ONE variable without an anchor, and only when fewer than 3 listed tables fit the "
+        "question; say so in assumptions when you do.\n"
+        f"Published tables: {json.dumps(preview, ensure_ascii=False)}\n"
+        if preview
+        else ""
+    )
     prompt = (
         "You design a measurable policy-review plan grounded in Korean public statistics. Return JSON only: "
         "{policy_focus, target_population, variables:[{id,label,categories:[...]}], alternatives:[{label,hypothesis,risk}], "
@@ -341,6 +380,7 @@ def llm_policy_plan(question: str) -> dict[str, Any]:
         "'사회조사', '인구총조사', '경제활동인구조사') over topic words; each 1-3 words, no region names, no verbs, no sentences. "
         "5 short interview questions. rights_review only when the policy could "
         "restrict a group's rights, else null. Every display text in Korean.\n"
+        f"{preview_block}"
         f"Policy question: {question}"
     )
     return _call_json_model(prompt)
@@ -352,7 +392,7 @@ def narrate_panel_segments(panel: list[dict[str, Any]], focus: str | None) -> di
         {
             "id": segment["id"],
             "weight": segment.get("weight_display"),
-            "attributes": {item["variable"]: item["value"] for item in segment.get("attributes", [])},
+            "attributes": {item["variable"]: item.get("value_label") or item["value"] for item in segment.get("attributes", [])},
         }
         for segment in panel
     ]
@@ -422,7 +462,8 @@ def decide_next_evidence_action(observation: dict[str, Any]) -> dict[str, Any]:
         "'search' re-searches the Korean public web with 1-3 NEW queries naming concrete statistics or institutions. "
         "'approve_broader' proposes approving national-proxy (broader) candidates with an explicit assumption — only when broader_candidates > 0. "
         "'stop' declares the evidence gap honestly. Never repeat a query listed in tried_kosis_queries or tried_web_queries. "
-        "reason: one short Korean sentence.\n"
+        "Prioritize whatever can constrain the variables in uncovered_variables — name queries after those variables' concepts, "
+        "not the already covered ones. reason: one short Korean sentence.\n"
         f"Observation: {json.dumps(observation, ensure_ascii=False)}"
     )
     try:
@@ -461,6 +502,12 @@ def extract_constraint_candidates(
             "When the excerpt uses the compact table form 'PRD_DE | 분류 | 항목 = 값 단위', each line is one published cell; "
             "a '%' unit means divide the value by 100 for the 0..1 constraint value. "
             "When the same measure is published for multiple periods, keep only the most recent period and drop the older ones. "
+            "COVER THE WHOLE VARIABLE: when a table publishes the categories of one plan variable as shares of the same "
+            "population, map EVERY allowed category of that variable from that table — SUM several source categories into "
+            "one plan category when needed (list the composition in mapping_note), and when the table publishes a total "
+            "(계 = 100%), derive the one remaining plan category as the remainder. A partial category set badly distorts "
+            "downstream weighting, so prefer a complete set; only fall back to partial mapping when the table truly lacks "
+            "the other categories. "
             "If a number cannot be mapped onto an allowed variable/category, omit that candidate rather than guessing. "
             "All candidates are proposals for human review, not facts.\n"
             f"Source metadata: {json.dumps({key: source.get(key) for key in ('organization', 'survey_name', 'published_at', 'population')}, ensure_ascii=False)}\n"
@@ -491,7 +538,44 @@ def extract_constraint_candidates(
             candidate["source_categories"] = {
                 str(index): str(item) for index, item in enumerate(candidate["source_categories"])
             }
+    _flag_partial_variable_coverage(candidates)
     return candidates
+
+
+def _flag_partial_variable_coverage(candidates: list[dict[str, Any]]) -> None:
+    """단일 변수 eq 제약의 범주 합이 1에서 크게 벗어나면 후보에 경고를 남긴다.
+
+    한 변수의 소수 범주만 승인되면 최대엔트로피가 잔여 질량을 미제약 범주에
+    몰아넣어 분포가 왜곡된다(#31). 같은 셀의 기간 중복은 첫 값만 센다.
+    """
+    per_category: dict[tuple[str, str], float] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("relation", "eq") != "eq":
+            continue
+        where = candidate.get("where")
+        if not isinstance(where, dict) or len(where) != 1:
+            continue
+        key, category = next(iter(where.items()))
+        try:
+            per_category.setdefault((str(key), str(category)), float(candidate.get("value", 0)))
+        except (TypeError, ValueError):
+            continue
+    totals: dict[str, float] = {}
+    for (key, _), value in per_category.items():
+        totals[key] = totals.get(key, 0.0) + value
+    partial = {key: total for key, total in totals.items() if not 0.9 <= total <= 1.1}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        where = candidate.get("where")
+        if not isinstance(where, dict) or len(where) != 1:
+            continue
+        key = str(next(iter(where)))
+        if key in partial:
+            note = str(candidate.get("mapping_note") or "").strip()
+            warning = f"[부분 매핑 경고] {key} 범주 합계 {partial[key]:.2f} — 잔여 질량이 미제약 범주로 쏠려 분포가 왜곡될 수 있음"
+            if warning not in note:
+                candidate["mapping_note"] = f"{note} {warning}".strip()
 
 
 def _demo_answer(persona: dict[str, Any], policy: str, seed: int) -> dict[str, Any]:
@@ -591,7 +675,7 @@ def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any]
         {
             "id": segment["id"],
             "weight": segment["weight_display"],
-            "attributes": {item["variable"]: item["value"] for item in segment["attributes"]},
+            "attributes": {item["variable"]: item.get("value_label") or item["value"] for item in segment["attributes"]},
         }
         for segment in panel
     ]

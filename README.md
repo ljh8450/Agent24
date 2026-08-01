@@ -48,6 +48,7 @@ python3.12 -m venv .venv
 .venv/bin/ruff check app tests
 .venv/bin/python -m unittest discover -s tests -v
 npm install && npx playwright install chromium && npm run test:e2e   # 웹 E2E
+PYTHONPATH=. python scripts/spot_check.py   # 실키 LLM 스팟체크(비용 발생) — 결과는 scripts/spot_results/
 ```
 
 ## 산출물

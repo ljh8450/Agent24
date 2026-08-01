@@ -231,6 +231,9 @@ class ResearchAgent:
             message = plan["blocked_reason"]
         else:
             proposed = parse_variables(plan["proposed_variables"])
+            labels_by_id = {
+                str(item.get("id")): item.get("category_labels") or {} for item in plan["proposed_variables"]
+            }
             self.store.update_run(
                 stored["id"],
                 status="planning",
@@ -239,9 +242,9 @@ class ResearchAgent:
                         "id": item.id,
                         "label": item.label,
                         "categories": list(item.categories),
-                        "category_labels": dict(plan["proposed_variables"][index].get("category_labels") or {}),
+                        "category_labels": labels_by_id.get(item.id, {}),
                     }
-                    for index, item in enumerate(proposed)
+                    for item in proposed
                 ],
             )
             self.store.append_event(
@@ -308,13 +311,13 @@ class ResearchAgent:
         llm_ready = all(os.getenv(name) for name in ("LLM_API_URL", "LLM_API_KEY", "LLM_MODEL"))
         self._autonomous_constraint_extraction(run_id, stored_sources, llm_ready)
         approved_ids = self._autonomous_evidence_gate(run_id)
-        if not approved_ids and llm_ready:
-            approved_ids = self._evidence_recovery_loop(run_id, plan)
+        # 부분 근거(일부 변수만 제약)도 루프 대상이다 — 미커버 변수가 남아 있으면 추가 수집을 시도한다(#35).
+        if llm_ready and self._uncovered_variables(run_id):
+            approved_ids = self._evidence_recovery_loop(run_id, plan) or approved_ids
 
         self.store.append_event(run_id, "tool.started", {"tool": "statistics.identification_bounds"})
         if approved_ids:
-            computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
-            evidence_mode = "approved_public_constraints"
+            computed, evidence_mode = self._compute_with_conflict_fallback(run_id, approved_ids)
         else:
             computed = self._scenario_only_model(run_id)
             evidence_mode = "scenario_only"
@@ -432,6 +435,57 @@ class ResearchAgent:
             "artifacts": {"html_report": report["report_url"], **report["downloads"]},
         }
 
+    def _compute_with_conflict_fallback(self, run_id: str, approved_ids: list[str]) -> tuple[dict[str, Any], str]:
+        """자동 승인 제약이 서로 모순이면 최소 충돌 집합만 강등하고 재계산한다.
+
+        같은 변수를 서로 다른 분할로 공표한 두 표가 동시에 승인되면 합이 1을
+        넘어 infeasible이 된다. 사람 검토가 없는 자율 실행에서는 충돌 core를
+        'conflicted'로 강등해 나머지 근거로 계산하고, 그래도 안 되면 시나리오로
+        정직하게 내려간다. 강등 내역은 이벤트로 남는다.
+        """
+        computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
+        if computed["result"]["status"] != "infeasible":
+            return computed, "approved_public_constraints"
+        core = sorted(set(computed["result"].get("conflict_core") or []))
+        # 충돌 core에서 근거가 가장 좋은 제약 하나만 남기고 강등:
+        # ① population_compatibility == "exact" 우선(broader보다) ② raw_statement의 PRD_DE 연도 최신 우선
+        # ③ 동률이면 id 사전순. (연도 파싱은 _autonomous_evidence_gate의 latest_period와 동일 로직)
+        by_id = {item["id"]: item for item in self.store.list_constraints(run_id)}
+
+        def keep_rank(constraint_id: str) -> tuple[bool, int, str]:
+            item = by_id.get(constraint_id, {})
+            match = re.search(r"PRD_DE\D{0,4}(\d{4})", str(item.get("raw_statement", "")))
+            year = int(match.group(1)) if match else 0
+            return (item.get("population_compatibility") != "exact", -year, constraint_id)
+
+        keep = min(core, key=keep_rank) if len(core) > 1 else None
+        drop = {identifier for identifier in core if identifier != keep}
+        self.store.append_event(
+            run_id, "statistics.conflict_demoted", {"dropped_constraint_ids": sorted(drop), "conflict_core": core}
+        )
+        for item in self.store.list_constraints(run_id):
+            if item["id"] in drop:
+                item["review_status"] = "conflicted"
+                item["override_note"] = ((item.get("override_note") or "") + " [자동] 상호 모순 최소 집합으로 강등됨").strip()
+                self.store.replace_constraint(run_id, item)
+        remaining = [identifier for identifier in approved_ids if identifier not in drop]
+        if remaining:
+            computed = self.compute(run_id, self._default_estimand(self.store.get_run(run_id)))
+            if computed["result"]["status"] != "infeasible":
+                return computed, "approved_public_constraints_after_conflict"
+        return self._scenario_only_model(run_id), "scenario_only_after_conflict"
+
+    def _uncovered_variables(self, run_id: str) -> list[str]:
+        """승인 제약이 하나도 조건으로 삼지 않은 변수 id 목록."""
+        run = self.store.get_run(run_id)
+        covered = {
+            key
+            for item in run["constraints"]
+            if item.get("review_status") == "approved"
+            for key in (item.get("where") or {})
+        }
+        return [variable["id"] for variable in run["variables"] if variable["id"] not in covered]
+
     def _evidence_recovery_loop(self, run_id: str, plan: dict[str, Any]) -> list[str]:
         """Observe the empty evidence gate and let the decision tool pick the next action.
 
@@ -445,12 +499,19 @@ class ResearchAgent:
         tried_web = [str(query) for query in plan.get("evidence_queries") or []]
         tried_kosis = [str(term) for term in plan.get("kosis_search_terms") or []]
         approved: list[str] = []
+        run = self.store.get_run(run_id)
+        variable_ids = [variable["id"] for variable in run["variables"]]
         for round_number in (1, 2):
             constraints = self.store.list_constraints(run_id)
+            uncovered = self._uncovered_variables(run_id)
+            if not uncovered:
+                break
             observation = {
                 "round": round_number,
                 "rounds_left": 2 - round_number,
-                "approved_count": 0,
+                "approved_count": sum(1 for item in constraints if item.get("review_status") == "approved"),
+                "covered_variables": [identifier for identifier in variable_ids if identifier not in uncovered],
+                "uncovered_variables": uncovered,
                 "candidate_count": len(constraints),
                 "broader_candidates": sum(
                     1
@@ -473,7 +534,7 @@ class ResearchAgent:
                 break
             if action == "approve_broader":
                 approved = self._autonomous_evidence_gate(run_id, allow_broader=True)
-                if approved:
+                if not self._uncovered_variables(run_id):
                     break
                 continue
             fresh = [query for query in decision["queries"] if query not in tried_web and query not in tried_kosis][:3]
@@ -504,7 +565,7 @@ class ResearchAgent:
             if new_sources:
                 self._autonomous_constraint_extraction(run_id, new_sources, True)
             approved = self._autonomous_evidence_gate(run_id)
-            if approved:
+            if not self._uncovered_variables(run_id):
                 break
         return approved
 
@@ -723,6 +784,8 @@ class ResearchAgent:
             if item.get("source_id") in trusted_sources
             and item.get("population_compatibility") in allowed_compat
             and str(item.get("raw_statement", "")).strip()
+            # 0%·100% 셀(eq value가 0.005 미만 또는 0.995 초과)은 분포 정보가 없어 승인해도 근거가 되지 않으므로 제외한다.
+            and not (item.get("relation") == "eq" and not 0.005 <= float(item.get("value") or 0.0) <= 0.995)
         ]
 
         def latest_period(item: dict[str, Any]) -> int:
@@ -1049,7 +1112,11 @@ class ResearchAgent:
             str(payload.get("selected_model", "maximum_entropy")),
         )
         result["estimand"] = {"numerator": numerator, "denominator": denominator}
-        result["assumption"] = "maximum entropy: 관측하지 않은 고차 상호작용을 0으로 두는 명시적 구조 가정"
+        result["assumption"] = "maximum entropy: 관측하지 않은 고차 상호작용을 0으로 두는 명시적 구조 가정" + (
+            ""
+            if result.get("cross_constraint_count")
+            else " · 승인 제약이 모두 단일 변수 조건이라 변수 간 상관은 관측되지 않았고 독립으로 처리됩니다 — 조합 비중은 주변분포의 곱입니다."
+        )
         self.store.update_run(run_id, result=result, estimand=result["estimand"], status="running")
         self.store.append_event(
             run_id, "statistics.completed", {"status": result["status"], "constraint_count": len(approved)}

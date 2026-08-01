@@ -91,6 +91,91 @@ class EvidenceRecoveryLoopTests(unittest.TestCase):
         self.assertEqual(len(self.decisions()), 2)
 
 
+class PartialCoverageLoopTests(EvidenceRecoveryLoopTests):
+    def approve_first_variable(self):
+        self.add_broader_candidate()
+        self.agent.approve_constraints(self.run["id"], {"constraint_ids": ["broader_1"]})
+
+    def test_partial_coverage_enters_loop_and_reports_uncovered_variables(self):
+        self.approve_first_variable()
+        captured: dict = {}
+
+        def fake_decide(observation):
+            captured.update(observation)
+            return {"action": "stop", "queries": [], "reason": "t"}
+
+        with patch("app.service.decide_next_evidence_action", side_effect=fake_decide):
+            self.agent._evidence_recovery_loop(self.run["id"], self.plan)
+        variable_ids = [variable["id"] for variable in self.run["variables"]]
+        self.assertEqual(captured["covered_variables"], [variable_ids[0]])
+        self.assertEqual(set(captured["uncovered_variables"]), set(variable_ids[1:]))
+        self.assertEqual(captured["approved_count"], 1)
+
+    def test_loop_noops_when_every_variable_is_covered(self):
+        self.add_broader_candidate()
+        for index, variable in enumerate(self.run["variables"][1:], start=2):
+            self.agent.add_constraint(
+                self.run["id"],
+                {
+                    "id": f"cover_{index}",
+                    "source_id": "src_loop",
+                    "label": f"cover {variable['id']}",
+                    "where": {variable["id"]: variable["categories"][0]},
+                    "relation": "eq",
+                    "value": 0.5,
+                    "population_compatibility": "exact",
+                    "raw_statement": "fixture (PRD_DE 2025)",
+                },
+            )
+        self.agent.approve_constraints(
+            self.run["id"], {"constraint_ids": ["broader_1", "cover_2", "cover_3"]}
+        )
+        self.assertEqual(self.agent._uncovered_variables(self.run["id"]), [])
+        with patch("app.service.decide_next_evidence_action") as decide:
+            approved = self.agent._evidence_recovery_loop(self.run["id"], self.plan)
+        decide.assert_not_called()
+        self.assertEqual(approved, [])
+
+
+class ConflictFallbackTests(unittest.TestCase):
+    def test_conflicting_approvals_demote_part_of_core_and_recompute(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        agent = ResearchAgent(Path(temp.name))
+        run = agent.chat("대전 청년 버스 요금 지원을 검토해줘")["run"]
+        agent.store.add_source(
+            run["id"],
+            Source(
+                "src_conflict", "https://kosis.kr/t", "t", "KOSIS", "s", "2025", "2025", "p", 10, "h",
+                "data/source-cache/x.txt", trust_tier="korean_official",
+            ).as_dict(),
+        )
+        variable = run["variables"][0]
+        # conflict_0은 id 사전순으로 앞서지만 broader·구연도 — 새 규칙에선 exact·최신인 conflict_1이 살아남아야 한다.
+        specs = [("broader", "fixture (PRD_DE 2023)"), ("exact", "fixture (PRD_DE 2025)")]
+        for index, (compat, statement) in enumerate(specs):
+            agent.add_constraint(
+                run["id"],
+                {
+                    "id": f"conflict_{index}",
+                    "source_id": "src_conflict",
+                    "label": variable["categories"][index],
+                    "where": {variable["id"]: variable["categories"][index]},
+                    "relation": "eq",
+                    "value": 0.9,  # 둘이면 합 1.8 — 모순
+                    "population_compatibility": compat,
+                    "raw_statement": statement,
+                },
+            )
+        agent.approve_constraints(run["id"], {"constraint_ids": ["conflict_0", "conflict_1"]})
+        computed, mode = agent._compute_with_conflict_fallback(run["id"], ["conflict_0", "conflict_1"])
+        self.assertEqual(mode, "approved_public_constraints_after_conflict")
+        self.assertEqual(computed["result"]["status"], "feasible")
+        statuses = {item["id"]: item["review_status"] for item in agent.store.list_constraints(run["id"])}
+        self.assertEqual(statuses["conflict_0"], "conflicted")
+        self.assertEqual(statuses["conflict_1"], "approved")
+
+
 COLLECTION_TOOLS = {
     "web.parallel_korean_policy_research",
     "source.fetch_snapshot",
@@ -144,6 +229,38 @@ class StopContractTests(unittest.TestCase):
         self.assertIn("검증용 안전 중단", result["evidence_gap"])
         self.assertTrue(result.get("policy_review"))
         self.assertIn("html_report", completed["artifacts"])
+
+
+class LowInformationGateTests(unittest.TestCase):
+    def test_zero_value_eq_constraint_is_not_auto_approved(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        agent = ResearchAgent(Path(temp.name))
+        run = agent.chat("대전 청년 버스 요금 지원을 검토해줘")["run"]
+        agent.store.add_source(
+            run["id"],
+            Source(
+                "src_lowinfo", "https://kosis.kr/t", "t", "KOSIS", "s", "2025", "2025", "p", 10, "h",
+                "data/source-cache/x.txt", trust_tier="korean_official",
+            ).as_dict(),
+        )
+        variable = run["variables"][0]
+        for index, value in enumerate([0.0, 0.3]):
+            agent.add_constraint(
+                run["id"],
+                {
+                    "id": f"lowinfo_{index}",
+                    "source_id": "src_lowinfo",
+                    "label": variable["categories"][index],
+                    "where": {variable["id"]: variable["categories"][index]},
+                    "relation": "eq",
+                    "value": value,
+                    "population_compatibility": "exact",
+                    "raw_statement": "fixture (PRD_DE 2025)",
+                },
+            )
+        approved = agent._autonomous_evidence_gate(run["id"])
+        self.assertEqual(approved, ["lowinfo_1"])
 
 
 if __name__ == "__main__":
