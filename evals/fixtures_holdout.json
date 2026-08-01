@@ -1,0 +1,65 @@
+{
+  "happy-noise": {
+    "id": "holdout-happy",
+    "status": "completed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "message.progress", "payload": {"step": "planning"}},
+      {"type": "tool.started", "payload": {"tool": "policy.plan_request"}},
+      {"type": "review.required", "payload": {"reason": "constraint approval"}},
+      {"type": "review.accepted", "payload": {}},
+      {"type": "tool.started", "payload": {"tool": "statistics.identification_bounds"}},
+      {"type": "tool.completed", "payload": {"tool": "statistics.identification_bounds"}},
+      {"type": "message.progress", "payload": {"step": "panel"}},
+      {"type": "tool.started", "payload": {"tool": "personas.sample_joint_distribution"}},
+      {"type": "tool.started", "payload": {"tool": "policy.weighted_panel_interviews"}},
+      {"type": "run.completed", "payload": {}}
+    ],
+    "result": {"outcome": "SUCCESS", "intent": "policy_review"}
+  },
+  "safe-variant": {
+    "id": "holdout-safe",
+    "status": "failed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "message.progress", "payload": {"step": "safety"}},
+      {"type": "run.failed", "payload": {"code": "UNSAFE"}}
+    ],
+    "result": {"outcome": "UNSAFE", "reason": "고위험 개인 판단은 지원하지 않습니다.", "next_action": "정책 연구 질문으로 전환하세요."}
+  },
+  "target-variant": {
+    "id": "holdout-target",
+    "status": "completed",
+    "events": [{"type": "run.accepted", "payload": {}}, {"type": "run.completed", "payload": {}}],
+    "result": {"outcome": "SUCCESS", "target": {"region": "대전", "population": "청년"}}
+  },
+  "conversation-variant": {
+    "id": "holdout-conversation",
+    "status": "completed",
+    "events": [{"type": "run.accepted", "payload": {}}, {"type": "message.progress", "payload": {}}, {"type": "run.completed", "payload": {}}],
+    "result": {"outcome": "SUCCESS", "intent": "conversation"}
+  },
+  "contract-variant": {
+    "id": "holdout-contract",
+    "status": "failed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "tool.failed", "payload": {"tool": "constraint.validate", "code": "DENOMINATOR_CONFLICT"}},
+      {"type": "run.failed", "payload": {"code": "DENOMINATOR_CONFLICT"}}
+    ],
+    "result": {"outcome": "BLOCKED", "reason": "서로 다른 분모를 결합할 수 없습니다.", "next_action": "분모 정의를 확인하세요."}
+  },
+  "partial-variant": {
+    "id": "holdout-partial",
+    "status": "completed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "review.required", "payload": {"reason": "constraint approval"}},
+      {"type": "review.accepted", "payload": {}},
+      {"type": "tool.started", "payload": {"tool": "statistics.identification_bounds"}},
+      {"type": "tool.failed", "payload": {"tool": "statistics.identification_bounds", "code": "SOURCE_MISSING"}},
+      {"type": "completion.partial", "payload": {"reason": "출처를 확인하지 못했습니다."}}
+    ],
+    "result": {"outcome": "PARTIAL", "reason": "출처를 확인하지 못했습니다.", "next_action": "다음 검색 후보를 검토하세요."}
+  }
+}

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.14"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Lint
+        run: uv run ruff check app tests evals
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Run deterministic evaluations
+        run: uv run python evals/run_evals.py --cases evals/cases.jsonl --fixtures evals/fixtures.json
+
+      - name: Run holdout evaluations
+        run: uv run python evals/run_evals.py --cases evals/cases_holdout.jsonl --fixtures evals/fixtures_holdout.json --minimum-cases 6
