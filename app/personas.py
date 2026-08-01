@@ -61,24 +61,6 @@ def generate_narratives(personas: list[dict[str, Any]], seed: int) -> list[dict[
     return narratives
 
 
-def answer_persona_question(persona: dict[str, Any], question: str, allowed_variable: str | None) -> dict[str, Any]:
-    """Refuse unless the caller names an approved sampled attribute boundary."""
-    available = {item["variable"]: item for item in persona["attributes"]}
-    if not allowed_variable or allowed_variable not in available:
-        return {
-            "persona_id": persona["id"],
-            "status": "refused_unidentified",
-            "text": "승인된 공개 통계 제약만으로는 이 질문의 개인적 경험이나 속성을 정할 수 없습니다. 표집된 변수 하나를 명시하거나 추가 표를 제공하세요.",
-        }
-    attribute = available[allowed_variable]
-    return {
-        "persona_id": persona["id"],
-        "status": "answered_sampled_attribute",
-        "text": f"이 완전 합성 페르소나의 표집된 {attribute['variable']} 값은 {attribute['value']}입니다. 이는 실제 개인의 경험이나 식별된 사실이 아닙니다.",
-        "attribute": attribute,
-    }
-
-
 def _configured_llm() -> tuple[str, str, str] | None:
     endpoint, key, model = os.getenv("LLM_API_URL"), os.getenv("LLM_API_KEY"), os.getenv("LLM_MODEL")
     return (endpoint, key, model) if endpoint and key and model else None
@@ -132,65 +114,6 @@ def extract_constraint_candidates(
     if not isinstance(candidates, list):
         raise DomainError("INVALID_EXTRACTION_OUTPUT", "제약 추출 모델이 candidates 배열을 반환하지 않았습니다.")
     return candidates
-
-
-def _demo_answer(persona: dict[str, Any], policy: str, seed: int) -> dict[str, Any]:
-    fingerprint = sum(ord(character) for character in f"{persona['id']}|{policy}|{seed}") % 3
-    return {
-        "persona_id": persona["id"],
-        "response": ("support", "neutral", "oppose")[fingerprint],
-        "reason": "데모 전용 결정론 응답이며 LLM 발화나 실제 여론이 아닙니다.",
-        "tag": "narrative",
-    }
-
-
-def simulate_survey(personas: list[dict[str, Any]], policy_question: str, seed: int) -> dict[str, Any]:
-    """Use a configured model only for clearly labelled fictional survey answers."""
-    if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1":
-        answers = [_demo_answer(persona, policy_question, seed) for persona in personas]
-        mode = "deterministic_demo"
-    else:
-        compact_personas = [{"id": item["id"], "attributes": item["attributes"]} for item in personas]
-        prompt = (
-            "You are simulating fully fictional adults sampled from a statistical model. "
-            "Do not claim to represent real people or surveys. Answer only JSON with an answers array. "
-            "Each answer must have persona_id, response (support|neutral|oppose), reason, tag='narrative'. "
-            "If the policy cannot be evaluated from the supplied attributes, use response='neutral' and say it is not identified.\n"
-            f"Policy question: {policy_question}\nPersonas: {json.dumps(compact_personas, ensure_ascii=False)}"
-        )
-        try:
-            answers = _call_json_model(prompt).get("answers", [])
-        except DomainError as error:
-            if error.code == "LLM_NOT_CONFIGURED":
-                raise DomainError(
-                    "LLM_NOT_CONFIGURED",
-                    "합성 설문에는 LLM_API_URL, LLM_API_KEY, LLM_MODEL이 필요합니다. 설정 전에는 페르소나 속성만 생성됩니다.",
-                ) from error
-            raise
-        except (KeyError, ValueError, urllib.error.URLError) as error:
-            raise DomainError(
-                "LLM_SURVEY_FAILED",
-                "합성 설문 모델 응답을 검증하지 못했습니다.",
-                details={"reason": type(error).__name__},
-            ) from error
-        expected = {item["id"] for item in personas}
-        if {item.get("persona_id") for item in answers} != expected or any(
-            item.get("response") not in {"support", "neutral", "oppose"} or item.get("tag") != "narrative"
-            for item in answers
-        ):
-            raise DomainError("INVALID_LLM_SURVEY_OUTPUT", "합성 설문 모델이 약속된 JSON 형식을 지키지 않았습니다.")
-        mode = "configured_llm"
-    counts = {
-        label: sum(answer["response"] == label for answer in answers) for label in ("support", "neutral", "oppose")
-    }
-    return {
-        "mode": mode,
-        "policy_question": policy_question,
-        "answers": answers,
-        "counts": counts,
-        "n": len(answers),
-        "warning": "이 결과는 완전 합성 페르소나의 모델 응답이며 실제 조사·여론·인과효과가 아닙니다.",
-    }
 
 
 def simulate_policy_interviews(panel: list[dict[str, Any]], plan: dict[str, Any], seed: int) -> list[dict[str, Any]]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from itertools import product
@@ -36,7 +37,7 @@ def parse_variables(value: list[dict[str, Any]]) -> list[Variable]:
     variables = [Variable.parse(item) for item in value]
     if not 1 <= len(variables) <= 7 or len({item.id for item in variables}) != len(variables):
         raise DomainError("INVALID_VARIABLE_SCHEMA", "변수는 고유한 1–7개 이산 변수여야 합니다.")
-    if len(list(product(*(item.categories for item in variables)))) > 4096:
+    if math.prod(len(item.categories) for item in variables) > 4096:
         raise DomainError("STATE_SPACE_TOO_LARGE", "결합 셀은 4096개를 넘을 수 없습니다. 범주 또는 변수를 줄이세요.")
     return variables
 

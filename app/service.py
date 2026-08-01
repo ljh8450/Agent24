@@ -10,12 +10,10 @@ from typing import Any
 from .contracts import Constraint, Variable, new_id, now, parse_variables, validate_where
 from .errors import DomainError
 from .personas import (
-    answer_persona_question,
     extract_constraint_candidates,
     generate_narratives,
     sample_personas,
     simulate_policy_interviews,
-    simulate_survey,
 )
 from .policy_review import build_policy_plan, policy_brief, summarize_panel_interviews, weighted_segments
 from .reporting import render_html_report
@@ -23,7 +21,6 @@ from .sources import (
     fetch_data_go_api,
     fetch_kosis_statistics,
     fetch_source,
-    korean_source_catalog,
     search_public_web,
     source_excerpt,
 )
@@ -352,7 +349,6 @@ class ResearchAgent:
         variables = [Variable.parse(item) for item in run["variables"]]
         estimand = self._default_estimand(run)["estimand"]
         result = estimate(variables, [], estimand["numerator"], None, [], "maximum_entropy")
-        result["solver_status"] = result["status"]
         result["status"] = "scenario_only"
         result["selected_model"] = "uninformed_maximum_entropy_scenario"
         result["estimand"] = estimand
@@ -421,13 +417,6 @@ class ResearchAgent:
         self.store.append_event(run_id, "schema.accepted", {"variable_ids": [item.id for item in variables]})
         return self.store.get_run(run_id)
 
-    def source_catalog(self) -> dict[str, Any]:
-        return {
-            "sources": korean_source_catalog(),
-            "data_go_services": ["welfare_list", "nps_subscription"],
-            "warning": "등급은 기관·도메인 기반 시작점입니다. 통계표의 조사설계·모집단·시점·범주를 반드시 검토하세요.",
-        }
-
     @staticmethod
     def _latest_policy_plan(run: dict[str, Any]) -> dict[str, Any]:
         for event in reversed(run.get("events", [])):
@@ -488,29 +477,6 @@ class ResearchAgent:
             "failed_queries": failures,
             "warning": "후보는 신뢰 도메인 우선 검색 결과일 뿐입니다. 원문 스냅샷·모집단·시점·분모를 검토하고 승인한 제약만 PGM에 사용합니다.",
         }
-
-    def search_sources(self, run_id: str, query: str, trusted_korean_only: bool = True) -> dict[str, Any]:
-        self.store.get_run(run_id)
-        results = search_public_web(query, trusted_korean_only)
-        self.store.append_event(
-            run_id,
-            "source.search_completed",
-            {"query": query, "count": len(results), "trusted_korean_only": trusted_korean_only},
-        )
-        return {
-            "results": results,
-            "trusted_korean_only": trusted_korean_only,
-            "warning": "검색 결과는 미검증 외부 증거입니다. 원문을 스냅샷으로 저장한 뒤 사람이 조사설계·모집단·범주 매핑을 검토해야 합니다.",
-        }
-
-    def fetch_source(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self.store.get_run(run_id)
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, dict):
-            raise DomainError("INVALID_SOURCE_METADATA", "출처 메타데이터는 JSON 객체여야 합니다.")
-        source = fetch_source(self.root, str(payload.get("url", "")), metadata)
-        self.store.add_source(run_id, source.as_dict())
-        return source.as_dict()
 
     def fetch_kosis(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self.store.get_run(run_id)
@@ -654,22 +620,6 @@ class ResearchAgent:
         self._persist_manifest(run_id)
         return self.store.get_run(run_id)
 
-    def survey(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        result = run["result"] or {}
-        items = result.get("personas", {}).get("items", [])
-        if not items:
-            raise DomainError("PERSONAS_REQUIRED", "합성 설문 전에는 페르소나를 생성해야 합니다.")
-        policy_question = " ".join(str(payload.get("policy_question", "")).split())
-        if len(policy_question) < 4:
-            raise DomainError("POLICY_QUESTION_REQUIRED", "조사할 정책 문항을 입력하세요.")
-        survey = simulate_survey(items, policy_question, int(result["personas"]["seed"]))
-        result["survey"] = survey
-        self.store.update_run(run_id, result=result)
-        self.store.append_event(run_id, "survey.completed", {"n": survey["n"], "mode": survey["mode"]})
-        self._persist_manifest(run_id)
-        return self.store.get_run(run_id)
-
     def narratives(self, run_id: str) -> dict[str, Any]:
         run = self.store.get_run(run_id)
         result = run["result"] or {}
@@ -714,100 +664,6 @@ class ResearchAgent:
             "policy.panel_interview_completed",
             {"plan_id": plan["id"], "segment_count": len(panel), "interview_count": len(interviews)},
         )
-        self._persist_manifest(run_id)
-        return self.store.get_run(run_id)
-
-    def persona_chat(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        items = (run["result"] or {}).get("personas", {}).get("items", [])
-        persona = next((item for item in items if item["id"] == payload.get("persona_id")), None)
-        if not persona:
-            raise DomainError("PERSONA_NOT_FOUND", "해당 합성 페르소나를 찾을 수 없습니다.")
-        answer = answer_persona_question(persona, str(payload.get("question", "")), payload.get("allowed_variable"))
-        self.store.append_event(
-            run_id, "persona.question_answered", {"persona_id": persona["id"], "status": answer["status"]}
-        )
-        return answer
-
-    def seal_holdout(self, run_id: str) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        result = run["result"] or {}
-        if result.get("status") != "feasible":
-            raise DomainError("FEASIBLE_MODEL_REQUIRED", "봉인 전에 feasible한 통계 모델이 필요합니다.")
-        if result.get("holdout"):
-            raise DomainError(
-                "HOLDOUT_ALREADY_SEALED", "이 run은 이미 홀드아웃을 봉인했습니다. 새 run으로 다시 시작하세요."
-            )
-        payload = {
-            "distribution": result["distribution"],
-            "estimand": result["estimand"],
-            "selected_model": result["selected_model"],
-            "maximum_entropy": result["maximum_entropy"],
-        }
-        result["holdout"] = {
-            "sealed_at": now(),
-            "prediction_hash": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
-            "prediction": payload,
-        }
-        self.store.update_run(run_id, result=result)
-        self.store.append_event(run_id, "holdout.sealed", {"prediction_hash": result["holdout"]["prediction_hash"]})
-        self._persist_manifest(run_id)
-        return self.store.get_run(run_id)
-
-    def evaluate_holdout(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        run = self.store.get_run(run_id)
-        result = run["result"] or {}
-        holdout = result.get("holdout")
-        if not holdout or holdout.get("evaluation"):
-            raise DomainError(
-                "HOLDOUT_NOT_READY", "먼저 예측을 봉인해야 하며, 봉인한 홀드아웃은 한 번만 채점할 수 있습니다."
-            )
-        actual = payload.get("actual_distribution")
-        if not isinstance(actual, list) or len(actual) != len(result["distribution"]):
-            raise DomainError("INVALID_HOLDOUT", "actual_distribution의 셀 수가 추정 분포와 일치해야 합니다.")
-        try:
-            actual = [float(item) for item in actual]
-        except (TypeError, ValueError) as error:
-            raise DomainError("INVALID_HOLDOUT", "홀드아웃 분포는 숫자 배열이어야 합니다.") from error
-        if any(item < 0 for item in actual) or abs(sum(actual) - 1) > 1e-8:
-            raise DomainError("INVALID_HOLDOUT", "홀드아웃 분포는 음수가 아니고 합이 1이어야 합니다.")
-        prediction = holdout["prediction"]["distribution"]
-        tv_distance = 0.5 * sum(abs(left - right) for left, right in zip(prediction, actual, strict=True))
-        estimand = holdout["prediction"]["estimand"]
-        states = result["states"]
-        numerator = [all(state.get(key) == value for key, value in estimand["numerator"].items()) for state in states]
-        denominator_where = estimand.get("denominator")
-        denominator = (
-            [all(state.get(key) == value for key, value in denominator_where.items()) for state in states]
-            if denominator_where
-            else None
-        )
-        if denominator:
-            joined = [left and right for left, right in zip(numerator, denominator, strict=True)]
-            denominator_probability = sum(value for value, mask in zip(actual, denominator, strict=True) if mask)
-            actual_estimand = (
-                sum(value for value, mask in zip(actual, joined, strict=True) if mask) / denominator_probability
-                if denominator_probability
-                else None
-            )
-        else:
-            actual_estimand = sum(value for value, mask in zip(actual, numerator, strict=True) if mask)
-        interval = result["identification"]
-        coverage = (
-            interval.get("lower") is not None
-            and actual_estimand is not None
-            and interval["lower"] - 1e-8 <= actual_estimand <= interval["upper"] + 1e-8
-        )
-        holdout["evaluation"] = {
-            "evaluated_at": now(),
-            "tv_distance": tv_distance,
-            "actual_estimand": actual_estimand,
-            "interval_covered": coverage,
-            "actual_distribution_hash": hashlib.sha256(json.dumps(actual).encode()).hexdigest(),
-        }
-        result["holdout"] = holdout
-        self.store.update_run(run_id, result=result)
-        self.store.append_event(run_id, "holdout.evaluated", {"tv_distance": tv_distance, "interval_covered": coverage})
         self._persist_manifest(run_id)
         return self.store.get_run(run_id)
 
