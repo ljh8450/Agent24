@@ -446,9 +446,19 @@ class ResearchAgent:
         if computed["result"]["status"] != "infeasible":
             return computed, "approved_public_constraints"
         core = sorted(set(computed["result"].get("conflict_core") or []))
-        # ponytail: 충돌 core에서 사전순 첫 제약만 남기고 강등 — 근거 전멸을 막는 최소 규칙.
-        # 더 똑똑한 선택(exact 우선·최신 연도 우선)은 실측에서 필요해지면 얹는다.
-        drop = set(core[1:]) if len(core) > 1 else set(core)
+        # 충돌 core에서 근거가 가장 좋은 제약 하나만 남기고 강등:
+        # ① population_compatibility == "exact" 우선(broader보다) ② raw_statement의 PRD_DE 연도 최신 우선
+        # ③ 동률이면 id 사전순. (연도 파싱은 _autonomous_evidence_gate의 latest_period와 동일 로직)
+        by_id = {item["id"]: item for item in self.store.list_constraints(run_id)}
+
+        def keep_rank(constraint_id: str) -> tuple[bool, int, str]:
+            item = by_id.get(constraint_id, {})
+            match = re.search(r"PRD_DE\D{0,4}(\d{4})", str(item.get("raw_statement", "")))
+            year = int(match.group(1)) if match else 0
+            return (item.get("population_compatibility") != "exact", -year, constraint_id)
+
+        keep = min(core, key=keep_rank) if len(core) > 1 else None
+        drop = {identifier for identifier in core if identifier != keep}
         self.store.append_event(
             run_id, "statistics.conflict_demoted", {"dropped_constraint_ids": sorted(drop), "conflict_core": core}
         )
@@ -773,6 +783,8 @@ class ResearchAgent:
             if item.get("source_id") in trusted_sources
             and item.get("population_compatibility") in allowed_compat
             and str(item.get("raw_statement", "")).strip()
+            # 0%·100% 셀(eq value가 0.005 미만 또는 0.995 초과)은 분포 정보가 없어 승인해도 근거가 되지 않으므로 제외한다.
+            and not (item.get("relation") == "eq" and not 0.005 <= float(item.get("value") or 0.0) <= 0.995)
         ]
 
         def latest_period(item: dict[str, Any]) -> int:

@@ -151,18 +151,20 @@ class ConflictFallbackTests(unittest.TestCase):
             ).as_dict(),
         )
         variable = run["variables"][0]
-        for index, category in enumerate(variable["categories"][:2]):
+        # conflict_0은 id 사전순으로 앞서지만 broader·구연도 — 새 규칙에선 exact·최신인 conflict_1이 살아남아야 한다.
+        specs = [("broader", "fixture (PRD_DE 2023)"), ("exact", "fixture (PRD_DE 2025)")]
+        for index, (compat, statement) in enumerate(specs):
             agent.add_constraint(
                 run["id"],
                 {
                     "id": f"conflict_{index}",
                     "source_id": "src_conflict",
-                    "label": category,
-                    "where": {variable["id"]: category},
+                    "label": variable["categories"][index],
+                    "where": {variable["id"]: variable["categories"][index]},
                     "relation": "eq",
                     "value": 0.9,  # 둘이면 합 1.8 — 모순
-                    "population_compatibility": "exact",
-                    "raw_statement": "fixture (PRD_DE 2025)",
+                    "population_compatibility": compat,
+                    "raw_statement": statement,
                 },
             )
         agent.approve_constraints(run["id"], {"constraint_ids": ["conflict_0", "conflict_1"]})
@@ -170,8 +172,8 @@ class ConflictFallbackTests(unittest.TestCase):
         self.assertEqual(mode, "approved_public_constraints_after_conflict")
         self.assertEqual(computed["result"]["status"], "feasible")
         statuses = {item["id"]: item["review_status"] for item in agent.store.list_constraints(run["id"])}
-        self.assertEqual(statuses["conflict_0"], "approved")
-        self.assertEqual(statuses["conflict_1"], "conflicted")
+        self.assertEqual(statuses["conflict_0"], "conflicted")
+        self.assertEqual(statuses["conflict_1"], "approved")
 
 
 COLLECTION_TOOLS = {
@@ -227,6 +229,38 @@ class StopContractTests(unittest.TestCase):
         self.assertIn("검증용 안전 중단", result["evidence_gap"])
         self.assertTrue(result.get("policy_review"))
         self.assertIn("html_report", completed["artifacts"])
+
+
+class LowInformationGateTests(unittest.TestCase):
+    def test_zero_value_eq_constraint_is_not_auto_approved(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        agent = ResearchAgent(Path(temp.name))
+        run = agent.chat("대전 청년 버스 요금 지원을 검토해줘")["run"]
+        agent.store.add_source(
+            run["id"],
+            Source(
+                "src_lowinfo", "https://kosis.kr/t", "t", "KOSIS", "s", "2025", "2025", "p", 10, "h",
+                "data/source-cache/x.txt", trust_tier="korean_official",
+            ).as_dict(),
+        )
+        variable = run["variables"][0]
+        for index, value in enumerate([0.0, 0.3]):
+            agent.add_constraint(
+                run["id"],
+                {
+                    "id": f"lowinfo_{index}",
+                    "source_id": "src_lowinfo",
+                    "label": variable["categories"][index],
+                    "where": {variable["id"]: variable["categories"][index]},
+                    "relation": "eq",
+                    "value": value,
+                    "population_compatibility": "exact",
+                    "raw_statement": "fixture (PRD_DE 2025)",
+                },
+            )
+        approved = agent._autonomous_evidence_gate(run["id"])
+        self.assertEqual(approved, ["lowinfo_1"])
 
 
 if __name__ == "__main__":
