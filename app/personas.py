@@ -368,9 +368,14 @@ def llm_policy_plan(question: str) -> dict[str, Any]:
     )
     prompt = (
         "You design a measurable policy-review plan grounded in Korean public statistics. Return JSON only: "
-        "{policy_focus, target_population, variables:[{id,label,categories:[...]}], alternatives:[{label,hypothesis,risk}], "
+        "{request_type, policy_focus, target_population, variables:[{id,label,categories:[...]}], alternatives:[{label,hypothesis,risk}], "
         "evidence_queries:[...], kosis_search_terms:[...], interview_questions:[...], rights_review:{severity,finding,issues:[...]}|null, "
         "assumptions:[{field,value,reason}]}.\n"
+        "request_type: 'plan_review' or 'audience_understanding'. DEFAULT to 'plan_review' — simulated panel "
+        "interviews are the product's core output, so choose 'audience_understanding' ONLY when the user PURELY wants "
+        "to understand who the target group is and asks for no reactions, no evaluation, no comparison and proposes "
+        "no policy to test. Any mention of expected reactions, acceptance, effectiveness, or a concrete plan to assess "
+        "means 'plan_review', even when the word 페르소나 appears.\n"
         "Rules: exactly 3 variables, each with an ascii snake_case id and 2-3 category codes that Korean public statistics "
         "(KOSIS, 공공데이터포털, 정부 실태조사) plausibly publish as proportions for this target population — prefer observable "
         "facts like 가구 형태, 이용 여부, 비용 부담 구간, 인지 여부 over invented psychological scales. "

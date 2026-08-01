@@ -210,7 +210,7 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertIn("report.write_provenance", tools)
         self.assertEqual(
             set(completed["artifacts"]),
-            {"html_report", "panel", "interviews", "evidence"},
+            {"html_report", "panel", "evidence"},
         )
         for url in completed["artifacts"].values():
             artifact_status, _, artifact = asyncio.run(request("GET", url))

@@ -158,6 +158,25 @@ class PolicyReviewTests(unittest.TestCase):
             {"under_20": "월세 부담 20% 미만", "over_20": "월세 부담 20% 이상"},
         )
 
+
+    def test_llm_request_type_overrides_keyword_and_invalid_falls_back(self):
+        base = {
+            "policy_focus": "f",
+            "target_population": "t",
+            "variables": [
+                {"id": "a", "label": "가", "categories": ["x", "y"]},
+                {"id": "b", "label": "나", "categories": ["p", "q"]},
+            ],
+            "alternatives": [{"label": "안"}],
+            "evidence_queries": ["질의"],
+        }
+        # '페르소나' 키워드가 있어도 LLM이 plan_review로 판정하면 인터뷰 플로우 유지
+        plan = build_policy_plan("고객 페르소나 관련 요청", "f", llm_raw={**base, "request_type": "plan_review"})
+        self.assertEqual(plan["request_type"], "plan_review")
+        # 무효 값은 키워드 폴백 (페르소나 → audience)
+        plan = build_policy_plan("고객 페르소나 관련 요청", "f", llm_raw={**base, "request_type": "nonsense"})
+        self.assertEqual(plan["request_type"], "audience_understanding")
+
     def test_audience_request_skips_interviews_and_returns_fieldwork_questions(self):
         with (
             patch("app.service.search_public_web", return_value=[]),

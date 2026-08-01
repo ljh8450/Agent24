@@ -268,6 +268,9 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
     """Validate a model-designed plan; any violation falls back to the keyword templates."""
     if not isinstance(raw, dict):
         return None
+    request_type = raw.get("request_type")
+    if request_type not in ("plan_review", "audience_understanding"):
+        request_type = None  # 무효 값은 키워드 폴백에 맡긴다
     variables_raw = raw.get("variables")
     if not isinstance(variables_raw, list) or not 2 <= len(variables_raw) <= 4:
         return None
@@ -339,6 +342,7 @@ def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
     if not focus or not queries:
         return None
     return {
+        "request_type": request_type,
         "policy_focus": focus,
         "target_population": str(raw.get("target_population", "")).strip(),
         "variables": variables,
@@ -416,7 +420,7 @@ def build_policy_plan(question: str, fallback_target: str, llm_raw: object = Non
     return {
         "id": plan_id,
         "status": "SAFETY_BLOCKED" if blocked_reason else "COMPLETED_WITH_ASSUMPTIONS" if assumptions else "PLANNED",
-        "request_type": _request_type(question),
+        "request_type": (llm_plan or {}).get("request_type") or _request_type(question),
         "plan_source": plan_source,
         "policy_domain": policy_domain,
         "policy_focus": policy_focus,

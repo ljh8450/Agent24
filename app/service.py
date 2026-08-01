@@ -1370,18 +1370,18 @@ class ResearchAgent:
                     "panel.jsonl",
                     "\n".join(json.dumps(item, ensure_ascii=False) for item in panel_records) + "\n",
                 ),
-                "interviews": self.store.write_artifact(
-                    run_id,
-                    "interviews.jsonl",
-                    "\n".join(
-                        json.dumps(item, ensure_ascii=False) for item in policy_review.get("interviews", [])
-                    )
-                    + "\n",
-                ),
                 "evidence": self.store.write_artifact(
                     run_id, "evidence.json", json.dumps(evidence_payload, ensure_ascii=False, indent=2)
                 ),
             }
+            interviews = policy_review.get("interviews") or []
+            if interviews:
+                # 인터뷰가 없는 실행(대상 이해·LLM 미설정)에는 빈 파일을 남기지 않는다.
+                downloads["interviews"] = self.store.write_artifact(
+                    run_id,
+                    "interviews.jsonl",
+                    "\n".join(json.dumps(item, ensure_ascii=False) for item in interviews) + "\n",
+                )
         for stale in ("report.md", "policy_brief.md"):
             (self.store.run_dir / run_id / stale).unlink(missing_ok=True)
         self.store.append_event(run_id, "report.completed", {"artifact": html_path})
