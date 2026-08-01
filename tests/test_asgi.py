@@ -173,6 +173,41 @@ class GatewayEndpointTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertEqual(response["error"]["code"], "DATA_GO_KEY_REQUIRED")
 
+    def test_high_impact_request_stops_before_artifact_creation(self):
+        status, _, created = self.call("POST", "/api/chat", {"text": "지원 대상자의 자격을 자동 판정해줘"})
+
+        self.assertEqual(status, 201)
+        run = created["run"]
+        self.assertEqual(run["status"], "safety_blocked")
+        self.assertFalse(run["result"])
+        event_types = [event["type"] for event in run["events"]]
+        self.assertEqual(event_types[-3:], [
+            "policy.plan_designed",
+            "policy.plan_created",
+            "policy.blocked",
+        ])
+
+    def test_streaming_conversation_cannot_bypass_high_impact_safety_gate(self):
+        with (
+            patch.object(asgi.agent, "classify_intent") as classify,
+            patch.object(asgi.agent, "converse_stream") as converse,
+        ):
+            status, _, body, _ = asyncio.run(
+                stream_request(
+                    "POST",
+                    "/api/agent/review/stream",
+                    {"session_id": "safety-test", "text": "이력서 첨부할테니까 지원 대상자의 자격을 자동 판정해줘"},
+                )
+            )
+
+        stream = body.decode("utf-8")
+        self.assertEqual(status, 201)
+        self.assertIn("event: safety.blocked", stream)
+        self.assertIn("event: chat.completed", stream)
+        self.assertIn("개인별 고위험 판단·자격 선별은 지원하지 않습니다", stream)
+        classify.assert_not_called()
+        converse.assert_not_called()
+
     def test_single_agent_review_completes_without_manual_inputs_or_quantitative_sources(self):
         with (
             patch("app.service.search_public_web", return_value=[]),

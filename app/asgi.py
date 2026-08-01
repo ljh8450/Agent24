@@ -150,6 +150,14 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
     # LLM 분류·플랜 호출 전에 헤더부터 흘려보낸다 — 프록시 타임아웃과 무응답 UI를 막는다.
     await send({"type": "http.response.start", "status": 201, "headers": headers})
     await _send_sse(send, "stream.open", {})
+    blocked_reason = await asyncio.to_thread(agent.safety_block_reason, text)
+    if blocked_reason:
+        await _send_sse(send, "safety.blocked", {"reason": blocked_reason})
+        await _send_sse(send, "message.stream.start", {"phase": "final"})
+        await _send_text_delta(send, blocked_reason)
+        await _send_sse(send, "chat.completed", {"reply": blocked_reason})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        return
     try:
         intent = await asyncio.to_thread(agent.classify_intent, session_id, text)
     except Exception:
