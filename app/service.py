@@ -14,6 +14,7 @@ from .personas import (
     classify_chat_intent,
     converse_with_memory,
     converse_with_memory_stream,
+    decide_next_evidence_action,
     extract_constraint_candidates,
     generate_narratives,
     llm_policy_plan,
@@ -300,6 +301,8 @@ class ResearchAgent:
         llm_ready = all(os.getenv(name) for name in ("LLM_API_URL", "LLM_API_KEY", "LLM_MODEL"))
         self._autonomous_constraint_extraction(run_id, stored_sources, llm_ready)
         approved_ids = self._autonomous_evidence_gate(run_id)
+        if not approved_ids and llm_ready:
+            approved_ids = self._evidence_recovery_loop(run_id, plan)
 
         self.store.append_event(run_id, "tool.started", {"tool": "statistics.identification_bounds"})
         if approved_ids:
@@ -422,7 +425,73 @@ class ResearchAgent:
             "artifacts": {"html_report": report["report_url"], **report["downloads"]},
         }
 
-    def _autonomous_kosis_evidence(self, run_id: str, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    def _evidence_recovery_loop(self, run_id: str, plan: dict[str, Any]) -> list[str]:
+        """Observe the empty evidence gate and let the decision tool pick the next action.
+
+        Hard budgets live in code: at most two extra rounds, three new queries per
+        round, and no query is ever repeated. The model only chooses WHAT to look at.
+        """
+        tried_web = [str(query) for query in plan.get("evidence_queries") or []]
+        tried_kosis = [str(term) for term in plan.get("kosis_search_terms") or []]
+        approved: list[str] = []
+        for round_number in (1, 2):
+            constraints = self.store.list_constraints(run_id)
+            observation = {
+                "round": round_number,
+                "rounds_left": 2 - round_number,
+                "approved_count": 0,
+                "candidate_count": len(constraints),
+                "broader_candidates": sum(
+                    1
+                    for item in constraints
+                    if item.get("population_compatibility") == "broader"
+                    and item.get("review_status") == "candidate"
+                    and str(item.get("raw_statement", "")).strip()
+                ),
+                "tried_kosis_queries": tried_kosis,
+                "tried_web_queries": tried_web,
+                "kosis_available": bool(os.getenv("KOSIS_API_KEY")),
+                "policy_focus": plan.get("policy_focus"),
+                "target_population": plan.get("target_population"),
+            }
+            self.store.append_event(run_id, "agent.evidence_round", {"round": round_number, "observation": observation})
+            decision = decide_next_evidence_action(observation)
+            self.store.append_event(run_id, "agent.decision", {"round": round_number, **decision})
+            action = decision["action"]
+            if action == "stop":
+                break
+            if action == "approve_broader":
+                approved = self._autonomous_evidence_gate(run_id, allow_broader=True)
+                if approved:
+                    break
+                continue
+            fresh = [query for query in decision["queries"] if query not in tried_web and query not in tried_kosis][:3]
+            if action == "kosis":
+                if not observation["kosis_available"]:
+                    continue
+                tried_kosis += fresh
+                new_sources = self._autonomous_kosis_evidence(run_id, plan, queries_override=fresh or None)
+            else:  # search
+                if not fresh:
+                    break
+                tried_web += fresh
+                candidates: list[dict[str, Any]] = []
+                for query in fresh:
+                    try:
+                        candidates.extend(search_public_web(query, True))
+                    except DomainError:
+                        continue
+                new_sources, _ = self._autonomous_source_snapshots(run_id, candidates)
+            if new_sources:
+                self._autonomous_constraint_extraction(run_id, new_sources, True)
+            approved = self._autonomous_evidence_gate(run_id)
+            if approved:
+                break
+        return approved
+
+    def _autonomous_kosis_evidence(
+        self, run_id: str, plan: dict[str, Any], queries_override: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Pull real published proportions straight from KOSIS OpenAPI for the plan variables."""
         if not os.getenv("KOSIS_API_KEY"):
             return []
@@ -432,7 +501,7 @@ class ResearchAgent:
             "수원", "수원시", "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기",
             "전국", "정책", "검토", "도입", "확대", "프로그램", "여부", "구간", "형태",
         }
-        queries = [str(term).strip() for term in plan.get("kosis_search_terms") or [] if str(term).strip()][:4]
+        queries = [str(term).strip() for term in queries_override or plan.get("kosis_search_terms") or [] if str(term).strip()][:4]
         if not queries:
             tokens = [
                 token
@@ -598,7 +667,8 @@ class ResearchAgent:
             {"tool": "llm.extract_constraint_candidates", "accepted_candidates": accepted},
         )
 
-    def _autonomous_evidence_gate(self, run_id: str) -> list[str]:
+    def _autonomous_evidence_gate(self, run_id: str, allow_broader: bool = False) -> list[str]:
+        allowed_compat = {"exact", "broader"} if allow_broader else {"exact"}
         self.store.append_event(run_id, "tool.started", {"tool": "review.auto_approve_exact_constraints"})
         run = self.store.get_run(run_id)
         trusted_sources = {
@@ -608,7 +678,7 @@ class ResearchAgent:
             item
             for item in run["constraints"]
             if item.get("source_id") in trusted_sources
-            and item.get("population_compatibility") == "exact"
+            and item.get("population_compatibility") in allowed_compat
             and str(item.get("raw_statement", "")).strip()
         ]
 
@@ -617,24 +687,38 @@ class ResearchAgent:
             return int(match.group(1)) if match else 0
 
         # 서로 다른 범주·교차표의 eq 제약은 모순이 아니므로 모두 승인 대상이다.
-        # 완전히 같은 셀(where 일치)의 중복만 걸러내고 최신 연도의 exact 모집단 제약을 고른다.
+        # 완전히 같은 셀(where 일치)의 중복만 걸러내고, exact를 broader보다 우선하며 최신 연도를 고른다.
         selected_by_cell: dict[tuple, dict[str, Any]] = {}
-        for item in sorted(eligible, key=lambda entry: -latest_period(entry)):
+        for item in sorted(
+            eligible, key=lambda entry: (entry.get("population_compatibility") != "exact", -latest_period(entry))
+        ):
             where = item.get("where") or {}
             if not where:
                 continue
             cell = tuple(sorted((str(key), str(value)) for key, value in where.items()))
             selected_by_cell.setdefault(cell, item)
-        selected = [item["id"] for item in selected_by_cell.values()]
+        chosen = list(selected_by_cell.values())
+        selected = [item["id"] for item in chosen]
         if selected:
-            self.approve_constraints(run_id, {"constraint_ids": selected})
+            broader_note = "전국(광의) 모집단 통계를 대상 집단의 근사로 사용한다는 명시적 가정 아래 자동 승인됨"
+            self.approve_constraints(
+                run_id,
+                {
+                    "constraint_ids": selected,
+                    "override_notes": {
+                        item["id"]: broader_note
+                        for item in chosen
+                        if item.get("population_compatibility") == "broader"
+                    },
+                },
+            )
         self.store.append_event(
             run_id,
             "tool.completed",
             {
                 "tool": "review.auto_approve_exact_constraints",
                 "approved": len(selected),
-                "gate": "exact_population_only",
+                "gate": "exact_plus_broader_assumption" if allow_broader else "exact_population_only",
             },
         )
         return selected

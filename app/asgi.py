@@ -43,9 +43,9 @@ ACTIVE_RUNS: set[str] = set()
 STREAM_TOOL_TEXT = {
     "policy.plan_request": "정책 대상, 핵심 가정, 권리 검토 기준을 설계했습니다.",
     "web.parallel_korean_policy_research": "한국 공공기관과 연구기관의 신뢰 출처를 병렬로 탐색하고 있습니다.",
-    "kosis.statistics_openapi": "KOSIS 공식 통계에서 추가 근거를 조회하고 있습니다.",
     "source.fetch_snapshot": "찾은 원문을 내려받고 해시가 있는 증거 스냅샷으로 고정하고 있습니다.",
     "llm.extract_constraint_candidates": "원문의 모집단과 수치를 PGM 제약 후보로 대조하고 있습니다.",
+    "kosis.statistics_openapi": "KOSIS OpenAPI에서 공표 비율 통계표를 내려받고 있습니다.",
     "review.auto_approve_exact_constraints": "모집단이 정확히 일치하는 제약만 코드 규칙으로 자동 승인하고 있습니다. 사람 검토가 아닙니다.",
     "agent.evidence_round": "현재 근거 상태를 관찰하고 추가 수집 라운드를 시작했습니다.",
     "agent.decision": "관찰한 근거 상태를 바탕으로 다음 수집 행동을 결정했습니다.",
@@ -74,11 +74,16 @@ def _stream_event_update(item: dict[str, Any]) -> dict[str, Any] | None:
     reason = str(payload.get("reason") or "")
     queries = [str(query) for query in (payload.get("queries") or []) if str(query).strip()]
     event_identity = item.get("created_at") or f"{payload.get('round', '')}:{payload.get('action', '')}:{'|'.join(queries)}"
+    text = reason or STREAM_TOOL_TEXT[event_type]
+    if event_type == "agent.decision":
+        text = f"증거 판단 {payload.get('round')}라운드: {payload.get('action')} — {text}"
+    elif payload.get("round") is not None:
+        text = f"증거 수집 {payload.get('round')}라운드: {text}"
     return {
         "tool": event_type,
         "event_id": f"{event_type}:{event_identity}",
         "status": "completed",
-        "text": reason or STREAM_TOOL_TEXT[event_type],
+        "text": text,
         "round": payload.get("round"),
         "action": payload.get("action"),
         "reason": reason or None,
@@ -228,26 +233,34 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
 
     task = asyncio.create_task(asyncio.to_thread(agent.continue_autonomous_review, run_id, created["message"]))
     insight_started = False
+
+    async def relay(events: list[dict[str, Any]]) -> None:
+        nonlocal insight_started
+        for item in events:
+            kind = item.get("type", "")
+            payload = item.get("payload", {})
+            if kind == "insight.delta":
+                if not insight_started:
+                    insight_started = True
+                    await _send_sse(send, "message.stream.start", {"phase": "insight"})
+                await _send_sse(send, "message.delta", {"delta": str(payload.get("delta", ""))})
+                continue
+            update = _stream_event_update(item)
+            if not update:
+                continue
+            await _send_sse(send, "tool.update", update)
+            if kind == "tool.completed" or kind == "agent.decision":
+                caption = str(update.get("text", ""))
+                if caption:
+                    await _send_sse(send, "message.stream.start", {"phase": "tool"})
+                    await _send_text_delta(send, caption)
+
     try:
         while not task.done():
             current = await asyncio.to_thread(agent.store.get_run, run_id)
             events = current.get("events", [])
             new_events = events[seen_events:]
-            for item in new_events:
-                if item.get("type") == "insight.delta":
-                    if not insight_started:
-                        insight_started = True
-                        await _send_sse(send, "message.stream.start", {"phase": "insight"})
-                    await _send_sse(send, "message.delta", {"delta": str(item.get("payload", {}).get("delta", ""))})
-                    continue
-                update = _stream_event_update(item)
-                if update:
-                    await _send_sse(send, "tool.update", update)
-                    if item["type"] == "tool.completed":
-                        caption = STREAM_TOOL_TEXT.get(str(update.get("tool", "")))
-                        if caption:
-                            await _send_sse(send, "message.stream.start", {"phase": "tool"})
-                            await _send_text_delta(send, caption)
+            await relay(new_events)
             if new_events:
                 seen_events = len(events)
                 await _send_sse(send, "run.updated", {"run": current})
@@ -255,22 +268,7 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
 
         completed = await task
         final_run = completed["run"]
-        remaining = final_run.get("events", [])[seen_events:]
-        for item in remaining:
-            if item.get("type") == "insight.delta":
-                if not insight_started:
-                    insight_started = True
-                    await _send_sse(send, "message.stream.start", {"phase": "insight"})
-                await _send_sse(send, "message.delta", {"delta": str(item.get("payload", {}).get("delta", ""))})
-                continue
-            update = _stream_event_update(item)
-            if update:
-                await _send_sse(send, "tool.update", update)
-                if item["type"] == "tool.completed":
-                    caption = STREAM_TOOL_TEXT.get(str(update.get("tool", "")))
-                    if caption:
-                        await _send_sse(send, "message.stream.start", {"phase": "tool"})
-                        await _send_text_delta(send, caption)
+        await relay(final_run.get("events", [])[seen_events:])
         await _send_sse(send, "run.updated", {"run": final_run})
         await _send_sse(send, "research.completed", completed.get("research", {}))
         await _send_sse(send, "message.stream.start", {"phase": "final"})
