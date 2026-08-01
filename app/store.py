@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,21 @@ class ProjectStore:
             raise DomainError("RUN_NOT_FOUND", "해당 실행을 찾을 수 없습니다.", status=404)
         return self._row_to_run(row)
 
+    def list_runs(self, limit: int = 12) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id FROM runs ORDER BY rowid DESC LIMIT ?", (int(limit),)).fetchall()
+        return [self.get_run(row["id"]) for row in rows]
+
+    def delete_run(self, run_id: str) -> None:
+        self.get_run(run_id)
+        with self._connect() as connection:
+            for table in ("events", "sources", "constraints"):
+                connection.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+            connection.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        artifacts = (self.run_dir / run_id).resolve()
+        if self.run_dir.resolve() in artifacts.parents and artifacts.is_dir():
+            shutil.rmtree(artifacts, ignore_errors=True)
+
     def update_run(self, run_id: str, **fields: Any) -> dict[str, Any]:
         allowed = {"status", "variables", "estimand", "result"}
         if not fields.keys() <= allowed:
@@ -192,14 +208,15 @@ class ProjectStore:
         return str(destination.relative_to(self.root))
 
     def read_artifact(self, run_id: str, filename: str) -> bytes:
+        # 신규 산출물 4종 + 이전 버전 run이 남긴 레거시 산출물(기존 링크 호환).
         if filename not in {
-            "report.md",
             "report.html",
             "run.json",
-            "policy_brief.md",
             "panel.jsonl",
-            "interviews.jsonl",
             "evidence.json",
+            "report.md",
+            "policy_brief.md",
+            "interviews.jsonl",
         }:
             raise DomainError("ARTIFACT_NOT_FOUND", "허용되지 않은 artifact입니다.", status=404)
         destination = (self.run_dir / run_id / filename).resolve()

@@ -3,268 +3,445 @@ from __future__ import annotations
 from html import escape
 from typing import Any
 
-import pandas as pd
-from great_tables import GT
+from .contracts import now
 
 REPORT_NOTICE = (
     "이 보고서는 공개 통계 제약과 명시된 구조 가정으로 만든 합성 연구 산출물입니다. "
     "실제 개인, 실제 여론조사, 인과효과를 나타내지 않습니다."
 )
 
+RESPONSE_LABELS = {"support": "긍정", "conditional": "조건부", "low_change": "변화 낮음", "decline": "거부"}
+RESPONSE_ORDER = ("support", "conditional", "low_change", "decline")
+# 색약 안전을 위해 색 + 라벨 + 수치를 항상 병행 표기한다.
+RESPONSE_COLORS = {"support": "#2f6f4f", "conditional": "#c07f2d", "low_change": "#8a8a83", "decline": "#a34d4d"}
+
 
 def _text(value: object) -> str:
-    if value is None or value == "":
-        return "—"
-    return str(value)
+    return "" if value is None else str(value)
 
 
 def _probability(value: object) -> str:
-    if value is None:
-        return "—"
     try:
-        return f"{float(value):.4f} ({float(value) * 100:.2f}%)"
+        return f"{float(value):.4f}"
     except (TypeError, ValueError):
-        return _text(value)
+        return "—"
 
 
-def _markdown_table(columns: list[str], rows: list[dict[str, object]]) -> str:
-    def cell(value: object) -> str:
-        return _text(value).replace("|", "\\|").replace("\n", "<br>")
-
-    header = "| " + " | ".join(columns) + " |"
-    divider = "| " + " | ".join("---" for _ in columns) + " |"
-    body = ["| " + " | ".join(cell(row.get(column)) for column in columns) + " |" for row in rows]
-    return "\n".join([header, divider, *body])
+def _latest_plan(run: dict[str, Any]) -> dict[str, Any]:
+    for event in reversed(run.get("events", [])):
+        if event.get("type") == "policy.plan_created":
+            return event.get("payload", {}).get("plan") or {}
+    return {}
 
 
-def _safe_frame(columns: list[str], rows: list[dict[str, object]]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [{column: escape(_text(row.get(column))) for column in columns} for row in rows], columns=columns
+def _persona_name(segment: dict[str, Any]) -> str:
+    return _text(segment.get("display_name") or segment.get("id"))
+
+
+def _inline_md(text: str) -> str:
+    html = escape(text)
+    import re
+
+    html = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", html)
+    return html
+
+
+def _md_to_html(markdown: str) -> str:
+    """Small markdown renderer for the insight section: headings, bullets, tables, bold."""
+    lines = _text(markdown).split("\n")
+    html: list[str] = []
+    list_open = False
+    table: list[str] = []
+
+    def close_list() -> None:
+        nonlocal list_open
+        if list_open:
+            html.append("</ul>")
+            list_open = False
+
+    def flush_table() -> None:
+        nonlocal table
+        if not table:
+            return
+        rows = [
+            [cell.strip() for cell in line.strip().strip("|").split("|")]
+            for line in table
+        ]
+        rows = [cells for cells in rows if not all(set(cell) <= set(":- ") and cell for cell in cells)]
+        if rows:
+            head, *body = rows
+            html.append('<div class="table-wrap"><table>')
+            html.append("<tr>" + "".join(f"<th>{_inline_md(cell)}</th>" for cell in head) + "</tr>")
+            for cells in body:
+                html.append("<tr>" + "".join(f"<td>{_inline_md(cell)}</td>" for cell in cells) + "</tr>")
+            html.append("</table></div>")
+        table = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            close_list()
+            table.append(stripped)
+            continue
+        flush_table()
+        if stripped.startswith("### "):
+            close_list()
+            html.append(f"<h3>{_inline_md(stripped[4:])}</h3>")
+        elif stripped.startswith("## "):
+            close_list()
+            html.append(f"<h3>{_inline_md(stripped[3:])}</h3>")
+        elif stripped.startswith("- "):
+            if not list_open:
+                html.append("<ul>")
+                list_open = True
+            html.append(f"<li>{_inline_md(stripped[2:])}</li>")
+        elif stripped:
+            close_list()
+            html.append(f"<p>{_inline_md(stripped)}</p>")
+    flush_table()
+    close_list()
+    return "".join(html)
+
+
+def _tiles_html(panel: list, approved: list, alternatives: list, evidence_status: str) -> str:
+    status_label = "실측 제약 반영" if evidence_status == "feasible" else "균등 시나리오"
+    tiles = (
+        ("합성 표본", f"{len(panel)}명", "결합분포 비례 표집"),
+        ("승인된 실측 제약", f"{len(approved)}건", status_label),
+        ("비교 정책안", f"{len(alternatives)}개", "동일 패널에서 비교"),
     )
+    return '<div class="tiles">' + "".join(
+        f'<div class="tile"><small>{escape(label)}</small><strong>{escape(value)}</strong><span>{escape(hint)}</span></div>'
+        for label, value, hint in tiles
+    ) + "</div>"
 
 
-def _great_table(title: str, subtitle: str, columns: list[str], rows: list[dict[str, object]]) -> str:
-    """One rendering harness for all display tables, including predictable empty tables."""
-    return GT(_safe_frame(columns, rows)).tab_header(title=title, subtitle=subtitle).as_raw_html()
+def _response_counts(interviews: list, policy_id: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in interviews:
+        if item.get("policy_id") == policy_id:
+            counts[item.get("response")] = counts.get(item.get("response"), 0) + 1
+    return counts
 
 
-def report_tables(run: dict[str, Any]) -> dict[str, tuple[list[str], list[dict[str, object]]]]:
-    result = run.get("result") or {}
-    constraints = run.get("constraints") or []
-    sources = run.get("sources") or []
-    identification = result.get("identification") or {}
-    plan = (
-        next(
-            (
-                event.get("payload", {}).get("plan")
-                for event in reversed(run.get("events", []))
-                if event.get("type") == "policy.plan_created"
-            ),
-            {},
+def _stacked_bars_html(review: dict[str, Any]) -> str:
+    interviews = review.get("interviews") or []
+    alternatives = review.get("alternatives") or []
+    if not interviews or not alternatives:
+        return ""
+    legend = "".join(
+        f'<span><i style="background:{RESPONSE_COLORS[key]}"></i>{RESPONSE_LABELS[key]}</span>' for key in RESPONSE_ORDER
+    )
+    rows = []
+    for alt in alternatives:
+        counts = _response_counts(interviews, alt.get("id"))
+        total = sum(counts.values()) or 1
+        segments = "".join(
+            f'<i style="width:{counts[key] / total * 100:.1f}%;background:{RESPONSE_COLORS[key]}"></i>'
+            for key in RESPONSE_ORDER
+            if counts.get(key)
         )
-        or {}
+        numbers = " · ".join(f"{RESPONSE_LABELS[key]} {counts[key]}명" for key in RESPONSE_ORDER if counts.get(key))
+        rows.append(
+            f'<div class="bar-row"><span class="bar-label">{escape(_text(alt.get("label")))}</span>'
+            f'<span class="bar">{segments}</span><small>{escape(numbers)}</small></div>'
+        )
+    return f'<div class="bars"><div class="legend">{legend}</div>{"".join(rows)}</div>'
+
+
+def _constraints_table_html(run: dict[str, Any]) -> str:
+    sources = {item.get("id"): item for item in run.get("sources", [])}
+    approved = [item for item in run.get("constraints", []) if item.get("review_status") == "approved"]
+    if not approved:
+        return (
+            '<p class="callout warn">승인된 실측 통계 제약이 없어 표본은 균등 시나리오에서 표집되었습니다. '
+            "아래 구성비는 모집단 추정치가 아닙니다.</p>"
+        )
+    rows = "".join(
+        "<tr><td>"
+        + escape(", ".join(f"{key} = {value}" for key, value in (item.get("where") or {}).items()))
+        + f"</td><td>{float(item.get('value', 0)) * 100:.1f}%</td><td>"
+        + ("대상 일치" if item.get("population_compatibility") == "exact" else "광의 대리값<sup>†</sup>")
+        + "</td><td>"
+        + escape(_text((sources.get(item.get("source_id")) or {}).get("organization") or item.get("source_id")))
+        + "</td><td>"
+        + escape(_text(item.get("raw_statement"))[:90])
+        + "</td></tr>"
+        for item in approved
     )
-    policy_review = result.get("policy_review") or {}
+    proxy_note = (
+        '<p class="footnote">† 광의 대리값: 전국·상위 모집단 통계를 대상 집단의 대리값으로 가정해 반영한 제약입니다. '
+        "대상 모집단의 실측치가 아닙니다.</p>"
+        if any(item.get("population_compatibility") != "exact" for item in approved)
+        else ""
+    )
+    return (
+        '<div class="table-wrap"><table><tr><th>조건</th><th>공표값</th><th>모집단</th><th>출처</th><th>원문 인용</th></tr>'
+        + rows
+        + "</table></div>"
+        + proxy_note
+    )
 
-    summary_columns = ["항목", "값"]
-    summary_rows = [
-        {"항목": "질문", "값": run.get("question")},
-        {"항목": "대상 힌트", "값": run.get("target_population")},
-        {"항목": "실행 상태", "값": run.get("status")},
-        {"항목": "승인된 제약", "값": sum(item.get("review_status") == "approved" for item in constraints)},
-        {"항목": "고정 출처", "값": len(sources)},
-        {"항목": "선택 구조", "값": result.get("selected_model")},
-    ]
 
-    source_columns = ["출처", "기관", "관측 시점", "모집단", "등급", "스냅샷"]
-    source_rows = [
-        {
-            "출처": source.get("title"),
-            "기관": source.get("organization"),
-            "관측 시점": source.get("observed_period"),
-            "모집단": source.get("population"),
-            "등급": source.get("trust_tier"),
-            "스냅샷": (source.get("snapshot_hash") or "")[:12],
-        }
-        for source in sources
-    ]
+def _panel_table_html(panel: list) -> str:
+    if not panel:
+        return ""
+    rows = "".join(
+        f"<tr><td>{escape(_persona_name(segment))}</td><td>"
+        + escape(" · ".join(_text(attr.get("value")) for attr in segment.get("attributes", [])))
+        + f"</td><td>{escape(_text(segment.get('weight_display')))}</td></tr>"
+        for segment in panel
+    )
+    return (
+        '<div class="table-wrap"><table><tr><th>가상 인물</th><th>표집된 속성</th><th>세그먼트 비중</th></tr>'
+        + rows
+        + "</table></div>"
+    )
 
-    constraint_columns = ["제약", "표준 조건", "관계", "값", "모집단 정합", "검토", "출처"]
-    constraint_rows = [
-        {
-            "제약": item.get("label"),
-            "표준 조건": ", ".join(f"{key}={value}" for key, value in (item.get("where") or {}).items()),
-            "관계": item.get("relation"),
-            "값": _probability(item.get("value")),
-            "모집단 정합": item.get("population_compatibility"),
-            "검토": item.get("review_status"),
-            "출처": item.get("source_id"),
-        }
-        for item in constraints
-    ]
 
-    estimate_columns = ["지표", "값", "해석"]
-    estimate_rows = [
-        {
-            "지표": "Feasibility",
-            "값": result.get("status"),
-            "해석": "제약을 동시에 만족하는 분포의 존재 여부",
-        },
-        {
-            "지표": "최대엔트로피 점추정",
-            "값": _probability((result.get("maximum_entropy") or {}).get("point_estimate")),
-            "해석": "고차 상호작용을 0으로 두는 구조 가정의 결과",
-        },
-        {
-            "지표": "가정 없는 식별구간",
-            "값": f"{_probability(identification.get('lower'))} – {_probability(identification.get('upper'))}",
-            "해석": identification.get("status") or "승인된 제약만으로 가능한 범위",
-        },
-    ]
+def _matrix_table_html(review: dict[str, Any]) -> str:
+    panel = review.get("panel") or []
+    interviews = review.get("interviews") or []
+    alternatives = review.get("alternatives") or []
+    if not panel or not interviews or not alternatives:
+        return ""
+    by_key = {(item.get("segment_id"), item.get("policy_id")): item for item in interviews}
+    head = "<tr><th>가상 인물</th>" + "".join(f"<th>{escape(_text(alt.get('label')))}</th>" for alt in alternatives) + "</tr>"
+    body = []
+    for segment in panel:
+        cells = []
+        for alt in alternatives:
+            item = by_key.get((segment.get("id"), alt.get("id")))
+            if item:
+                key = item.get("response")
+                cells.append(
+                    f'<td><span class="chip" style="background:{RESPONSE_COLORS.get(key, "#777")}1f;'
+                    f'color:{RESPONSE_COLORS.get(key, "#555")}">{RESPONSE_LABELS.get(key, escape(_text(key)))}</span></td>'
+                )
+            else:
+                cells.append("<td>—</td>")
+        body.append(f"<tr><td>{escape(_persona_name(segment))}</td>" + "".join(cells) + "</tr>")
+    return '<div class="table-wrap"><table>' + head + "".join(body) + "</table></div>"
 
-    policy_columns = ["정책안", "가설", "주요 위험", "합성 패널 반응"]
-    response_summary = policy_review.get("responses") or {}
-    policy_rows = [
-        {
-            "정책안": option.get("label"),
-            "가설": option.get("hypothesis"),
-            "주요 위험": option.get("risk"),
-            "합성 패널 반응": ", ".join(
-                f"{key}={float(value) * 100:.1f}%"
-                for key, value in (response_summary.get(option.get("id")) or {}).items()
+
+def _voices_html(review: dict[str, Any]) -> str:
+    panel = review.get("panel") or []
+    interviews = review.get("interviews") or []
+    alternatives = review.get("alternatives") or []
+    names = {segment.get("id"): _persona_name(segment) for segment in panel}
+    blocks = []
+    for alt in alternatives:
+        seen: set[str] = set()
+        quotes = []
+        for item in interviews:
+            if item.get("policy_id") != alt.get("id"):
+                continue
+            reason = _text(item.get("reason"))
+            if not reason or reason in seen:
+                continue
+            seen.add(reason)
+            label = RESPONSE_LABELS.get(item.get("response"), _text(item.get("response")))
+            quotes.append(
+                f'<blockquote><p>“{escape(reason)}”</p><footer>가상 인물 {escape(names.get(item.get("segment_id"), ""))}'
+                f" · {escape(label)}"
+                + (f" · 장벽: {escape(_text(item.get('barrier')))}" if item.get("barrier") else "")
+                + "</footer></blockquote>"
             )
-            or "모의 인터뷰 미실행",
-        }
-        for option in plan.get("alternatives", [])
-    ]
-
-    persona_columns = ["합성 페르소나", "표집된 속성", "태그"]
-    persona_rows = [
-        {
-            "합성 페르소나": item.get("id"),
-            "표집된 속성": ", ".join(
-                f"{attribute.get('variable')}={attribute.get('value')}" for attribute in item.get("attributes", [])
-            ),
-            "태그": "sampled · 완전 합성",
-        }
-        for item in (result.get("personas") or {}).get("items", [])[:20]
-    ]
-    panel_columns = ["가중 세그먼트", "속성", "가중치", "근거 수준"]
-    panel_rows = [
-        {
-            "가중 세그먼트": item.get("id"),
-            "속성": ", ".join(
-                f"{attribute.get('variable')}={attribute.get('value')}" for attribute in item.get("attributes", [])
-            ),
-            "가중치": item.get("weight_display"),
-            "근거 수준": item.get("evidence_level"),
-        }
-        for item in policy_review.get("panel", [])
-    ]
-
-    holdout = result.get("holdout") or {}
-    evaluation = holdout.get("evaluation") or {}
-    holdout_columns = ["항목", "값"]
-    holdout_rows = [
-        {"항목": "예측 봉인 hash", "값": holdout.get("prediction_hash")},
-        {"항목": "Total variation distance", "값": evaluation.get("tv_distance")},
-        {"항목": "실제 관심량", "값": _probability(evaluation.get("actual_estimand"))},
-        {"항목": "식별구간 포함 여부", "값": evaluation.get("interval_covered")},
-    ]
-
-    activity_columns = ["도구/이벤트", "상태", "기록 시각"]
-    activity_rows = [
-        {
-            "도구/이벤트": event.get("payload", {}).get("tool") or event.get("type"),
-            "상태": event.get("type"),
-            "기록 시각": event.get("created_at"),
-        }
-        for event in run.get("events", [])
-    ]
-    return {
-        "summary": (summary_columns, summary_rows),
-        "sources": (source_columns, source_rows),
-        "constraints": (constraint_columns, constraint_rows),
-        "estimate": (estimate_columns, estimate_rows),
-        "policy": (policy_columns, policy_rows),
-        "personas": (persona_columns, persona_rows),
-        "panel": (panel_columns, panel_rows),
-        "holdout": (holdout_columns, holdout_rows),
-        "activity": (activity_columns, activity_rows),
-    }
+            if len(quotes) >= 2:
+                break
+        if quotes:
+            blocks.append(f"<h3>{escape(_text(alt.get('label')))}</h3>" + "".join(quotes))
+    return "".join(blocks)
 
 
-def render_markdown_report(run: dict[str, Any]) -> str:
-    tables = report_tables(run)
-    result = run.get("result") or {}
-    sections = [
-        "# 페르소나 복원기 연구 보고서",
-        "",
-        f"> {REPORT_NOTICE}",
-        "",
-        "## 실행 요약",
-        _markdown_table(*tables["summary"]),
-        "",
-        "## 출처 원장",
-        _markdown_table(*tables["sources"]),
-        "",
-        "## 검토 제약",
-        _markdown_table(*tables["constraints"]),
-        "",
-        "## 결합분포와 식별성",
-        _markdown_table(*tables["estimate"]),
-        "",
-        "## 정책안과 모의 반응",
-        _markdown_table(*tables["policy"]),
-        "",
-        "## 합성 페르소나 표집",
-        _markdown_table(*tables["personas"]),
-        "",
-        "## 가중 가상 시민 패널",
-        _markdown_table(*tables["panel"]),
-        "",
-        "## 봉인 홀드아웃 채점",
-        _markdown_table(*tables["holdout"]),
-        "",
-        "## 도구 실행 이력",
-        _markdown_table(*tables["activity"]),
-        "",
-        "## 한계와 해석 경계",
-        "- 검색 결과와 원문은 도구 정책을 바꾸지 않는 외부 증거입니다.",
-        "- `approved` 상태의 제약만 계산에 사용됩니다. 모집단·시점·범주 매핑은 출처 원장과 함께 재검토해야 합니다.",
-        "- 점추정은 최대엔트로피 또는 사용자가 택한 구조 가정에 의존합니다. 식별구간과 동일시할 수 없습니다.",
-        "- 페르소나는 결합분포에서 표집한 완전 합성 속성 튜플입니다. 실제 응답자나 대표 표본이 아닙니다.",
-        "",
-        "## 재현 정보",
-        f"- run id: `{run.get('id')}`",
-        f"- selected model: `{result.get('selected_model')}`",
-        f"- generated state: `{run.get('status')}`",
-    ]
-    return "\n".join(sections) + "\n"
+def _sources_table_html(run: dict[str, Any]) -> str:
+    sources = run.get("sources") or []
+    if not sources:
+        return "<p>저장된 출처 스냅샷이 없습니다.</p>"
+    rows = "".join(
+        f"<tr><td>{escape(_text(source.get('title'))[:70])}</td><td>{escape(_text(source.get('organization')))}</td>"
+        f"<td>{escape(_text(source.get('observed_period')))}</td><td><code>{escape(_text(source.get('snapshot_hash'))[:12])}</code></td></tr>"
+        for source in sources
+    )
+    return (
+        '<div class="table-wrap"><table><tr><th>출처</th><th>기관</th><th>관측 시점</th><th>스냅샷 해시</th></tr>'
+        + rows
+        + "</table></div>"
+    )
 
 
 def render_html_report(run: dict[str, Any]) -> str:
-    tables = report_tables(run)
-    table_html = "\n".join(
-        _great_table(title, "프로젝트 로컬 provenance artifact", *tables[key])
-        for key, title in (
-            ("summary", "실행 요약"),
-            ("sources", "출처 원장"),
-            ("constraints", "검토 제약"),
-            ("estimate", "결합분포와 식별성"),
-            ("policy", "정책안과 모의 반응"),
-            ("personas", "합성 페르소나 표집"),
-            ("panel", "가중 가상 시민 패널"),
-            ("holdout", "봉인 홀드아웃 채점"),
-            ("activity", "도구 실행 이력"),
-        )
+    result = run.get("result") or {}
+    review = result.get("policy_review") or {}
+    plan = _latest_plan(run)
+    panel = review.get("panel") or []
+    alternatives = review.get("alternatives") or []
+    approved = [item for item in run.get("constraints", []) if item.get("review_status") == "approved"]
+    evidence_status = _text(result.get("status"))
+    identification = result.get("identification") or {}
+    rights = plan.get("rights_review")
+
+    insights_html = _md_to_html(review.get("insights") or "") or "<p>모델 인사이트가 생성되지 않은 실행입니다.</p>"
+    verdict = "가상 패널 모의 인터뷰 기준으로는 원안 단독 확정보다, 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다."
+    has_proxy = any(item.get("population_compatibility") != "exact" for item in approved)
+    status_badge = (
+        ("실측 제약 반영" + (" · 광의 대리값 포함" if has_proxy else "") + " (feasible)")
+        if evidence_status == "feasible"
+        else "균등 시나리오 (scenario_only)"
     )
+
+    omitted = review.get("omitted_cells") or []
+    omitted_html = ""
+    if omitted:
+        omitted_rows = "".join(
+            "<tr><td>"
+            + escape(" · ".join(_text(attr.get("value")) for attr in cell.get("attributes", [])))
+            + f"</td><td>{float(cell.get('share', 0)) * 100:.1f}%</td></tr>"
+            for cell in omitted
+        )
+        omitted_html = (
+            "<h3>표본 밖 세그먼트</h3>"
+            '<p class="footnote">모집단 비중이 있으나 비례 표집에서 좌석을 받지 못해 이번 표본에서 발화하지 못한 집단입니다. '
+            "사각지대 해석 시 반드시 고려하세요.</p>"
+            '<div class="table-wrap"><table><tr><th>속성 조합</th><th>모집단 비중</th></tr>' + omitted_rows + "</table></div>"
+        )
+
+    holdout = result.get("holdout") or {}
+    evaluation = holdout.get("evaluation") or {}
+    survey = result.get("survey") or {}
+    sensitivity = result.get("structure_sensitivity") or []
+    extra_results = ""
+    if holdout:
+        extra_results += (
+            "<h3>봉인 홀드아웃 채점</h3><ul>"
+            f"<li>예측 봉인 hash: <code>{escape(_text(holdout.get('prediction_hash'))[:16])}</code></li>"
+            + (
+                f"<li>Total variation distance: {_probability(evaluation.get('tv_distance'))}</li>"
+                f"<li>실제 관심량: {_probability(evaluation.get('actual_estimand'))}</li>"
+                f"<li>식별구간 포함 여부: {escape(_text(evaluation.get('interval_covered')))}</li>"
+                if evaluation
+                else "<li>아직 채점되지 않은 봉인 예측입니다.</li>"
+            )
+            + "</ul>"
+        )
+    if survey:
+        extra_results += (
+            "<h3>합성 설문</h3><ul>"
+            f"<li>모드: {escape(_text(survey.get('mode')))} · 응답 {escape(_text(survey.get('n')))}건</li>"
+            f"<li>집계: {escape(_text(survey.get('counts')))}</li></ul>"
+        )
+    if sensitivity:
+        extra_results += "<h3>구조 민감도</h3><ul>" + "".join(
+            f"<li><code>{escape(_text(item.get('id')))}</code>: {escape(_text(item.get('status')))} · 점추정 {_probability(item.get('point_estimate'))}</li>"
+            for item in sensitivity
+        ) + "</ul>"
+
+    rights_html = (
+        f"<p>{escape(_text(rights.get('finding')))}</p><ul>"
+        + "".join(f"<li>{escape(_text(issue))}</li>" for issue in rights.get("issues", []))
+        + "</ul>"
+        if rights
+        else "<p>별도의 고위험 기본권 경고가 탐지되지 않았습니다.</p>"
+    )
+
+    sections = f"""
+<section><h2><span>1</span>핵심 요약</h2>
+{_tiles_html(panel, approved, alternatives, evidence_status)}
+<p class="verdict">{escape(verdict)}</p>
+{_stacked_bars_html(review)}
+</section>
+<section><h2><span>2</span>종합 인사이트</h2>{insights_html}</section>
+<section><h2><span>3</span>표본 구성과 근거</h2>
+{_constraints_table_html(run)}
+{_panel_table_html(panel)}
+<p class="footnote">가상 인물은 결합분포에서 비례 표집한 완전 합성 세그먼트이며, 같은 속성 조합은 대표 응답을 공유합니다.</p>
+{omitted_html}
+</section>
+<section><h2><span>4</span>가상 인물 × 정책안 반응</h2>{_matrix_table_html(review)}</section>
+<section><h2><span>5</span>패널 목소리 (합성 모의 인터뷰)</h2>{_voices_html(review) or "<p>모의 인터뷰가 실행되지 않았습니다.</p>"}
+<p class="footnote">모든 인용은 통계 가중 합성 세그먼트의 모델 모의 응답이며 실제 시민 발화가 아닙니다.</p>
+</section>
+<section><h2><span>6</span>권리·법률 사전검토</h2>{rights_html}</section>
+<section><h2><span>7</span>현실 검증 계획</h2>
+<ul>
+<li><strong>기간</strong> 4주 소규모 시범</li>
+<li><strong>비교</strong> 원안 / 상위 대안 / 지원 없음 또는 기존 서비스</li>
+<li><strong>지표</strong> 신규 참여, 실제 사용, 기존 이용자 집중도, 지역·정보 접근 격차, 재이용</li>
+<li><strong>수집</strong> 사전 등록한 동의 기반 실제 설문·행동 집계·이해관계자 인터뷰</li>
+</ul></section>
+<section><h2><span>8</span>출처 원장</h2>{_sources_table_html(run)}</section>
+<section><h2><span>9</span>방법과 한계</h2>
+{extra_results}
+<ul>
+<li>선택 구조: <code>{escape(_text(result.get("selected_model")))}</code> · 가정 없는 식별구간 {_probability(identification.get("lower"))} – {_probability(identification.get("upper"))}</li>
+<li>승인된 제약만 결합분포 계산에 사용했습니다. 범주 매핑과 모집단 정합은 출처 원장과 함께 재검토해야 합니다.</li>
+<li>점추정은 최대엔트로피 구조 가정에 의존하며 식별구간과 동일시할 수 없습니다.</li>
+<li>합성 인물의 발화·반응은 모델 생성이며 실제 응답자·대표 표본이 아닙니다.</li>
+</ul></section>"""
+
     question = escape(_text(run.get("question")))
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>페르소나 복원기 연구 보고서</title><style>
-  :root {{ color-scheme: light; --ink:#292925; --muted:#707069; --line:#deded7; --orange:#d86645; }}
-  * {{ box-sizing:border-box; }} body {{ max-width:1080px; margin:0 auto; padding:48px 30px 80px; color:var(--ink); background:#fff; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo",sans-serif; line-height:1.55; }}
-  header {{ margin-bottom:38px; padding-bottom:24px; border-bottom:1px solid var(--line); }} .eyebrow {{ color:var(--orange); font-size:11px; font-weight:750; letter-spacing:.1em; }} h1 {{ margin:7px 0; font-size:32px; letter-spacing:-.04em; }} .question {{ color:var(--muted); font-size:16px; }} .notice {{ border-left:3px solid var(--orange); padding:10px 14px; color:#5d514b; background:#fff6f2; font-size:13px; }}
-  h2 {{ margin:37px 0 12px; font-size:20px; letter-spacing:-.03em; }} .gt_table {{ margin:0 0 20px; }} .gt_table table {{ width:100%; border-collapse:collapse; font-size:12px; }} .gt_table th {{ color:#55554f; background:#f7f7f3; }} .gt_table th,.gt_table td {{ border-bottom:1px solid var(--line); padding:8px 9px; text-align:left; vertical-align:top; }} footer {{ margin-top:44px; color:var(--muted); font-size:12px; }} @media print {{ body {{ padding:22px; }} }}
-</style></head><body><header><span class="eyebrow">PROVENANCE-AWARE SYNTHETIC POLICY RESEARCH</span><h1>페르소나 복원기 연구 보고서</h1><p class="question">{question}</p><p class="notice">{escape(REPORT_NOTICE)}</p></header>{table_html}<h2>해석 한계</h2><ul><li>승인된 제약만 계산에 사용했습니다.</li><li>점추정은 구조 가정에 의존하며, 식별구간과 구별해야 합니다.</li><li>합성 페르소나는 실제 개인·실제 응답·대표 표본이 아닙니다.</li></ul><footer>run id: {escape(_text(run.get("id")))} · 로컬 provenance artifact</footer></body></html>"""
+<title>정책 검토 보고서 · E2P Agent</title><style>
+  :root {{ color-scheme: light; --ink:#292925; --muted:#6e6e66; --line:#e2e1d8; --accent:#b0562f; --paper:#faf9f4; }}
+  * {{ box-sizing:border-box; }}
+  body {{ max-width:880px; margin:0 auto; padding:56px 34px 90px; color:var(--ink); background:var(--paper); font-family:"Apple SD Gothic Neo","Pretendard",-apple-system,sans-serif; font-size:15px; line-height:1.7; }}
+  header {{ margin-bottom:40px; padding-bottom:26px; border-bottom:2px solid var(--ink); }}
+  .eyebrow {{ color:var(--accent); font-size:11px; font-weight:750; letter-spacing:.14em; }}
+  h1 {{ margin:10px 0 6px; font-family:Georgia,"Times New Roman","Apple SD Gothic Neo",serif; font-size:34px; letter-spacing:-.02em; }}
+  .question {{ margin:0 0 14px; color:var(--muted); font-size:16px; }}
+  .meta {{ display:flex; flex-wrap:wrap; gap:8px 18px; color:var(--muted); font-size:12px; }}
+  .meta b {{ color:var(--ink); font-weight:600; }}
+  .badge {{ display:inline-block; padding:2px 9px; border:1px solid var(--line); border-radius:999px; background:#fff; font-size:11px; }}
+  .notice {{ margin-top:16px; padding:10px 14px; border-left:3px solid var(--accent); background:#fff4ee; color:#5d514b; font-size:13px; }}
+  section {{ margin:38px 0; }}
+  h2 {{ margin:0 0 14px; font-family:Georgia,serif; font-size:21px; letter-spacing:-.01em; }}
+  h2 span {{ display:inline-block; margin-right:10px; color:var(--accent); font-size:15px; }}
+  h3 {{ margin:20px 0 8px; font-size:15px; }}
+  p {{ margin:0 0 10px; }}
+  ul {{ margin:0 0 12px; padding-left:22px; }}
+  li {{ margin-bottom:5px; }}
+  .tiles {{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:0 0 18px; }}
+  .tile {{ padding:13px 15px; border:1px solid var(--line); border-radius:10px; background:#fff; }}
+  .tile small {{ display:block; color:var(--muted); font-size:11px; }}
+  .tile strong {{ display:block; margin:3px 0 1px; font-size:22px; font-family:Georgia,serif; }}
+  .tile span {{ color:var(--muted); font-size:11px; }}
+  .verdict {{ padding:11px 14px; border:1px solid var(--line); border-radius:10px; background:#fff; font-weight:600; }}
+  .bars {{ display:grid; gap:9px; margin:14px 0 4px; }}
+  .legend {{ display:flex; gap:14px; color:var(--muted); font-size:11px; }}
+  .legend i {{ display:inline-block; width:10px; height:10px; margin-right:4px; border-radius:2px; vertical-align:-1px; }}
+  .bar-row {{ display:grid; grid-template-columns:minmax(110px,180px) 1fr; gap:12px; align-items:center; }}
+  .bar-row small {{ grid-column:2; color:var(--muted); font-size:11px; }}
+  .bar-label {{ font-size:12px; }}
+  .bar {{ display:flex; height:16px; overflow:hidden; border-radius:4px; background:#eceae0; }}
+  .bar i {{ display:block; height:100%; }}
+  .table-wrap {{ overflow-x:auto; margin:0 0 14px; }}
+  table {{ width:100%; border-collapse:collapse; background:#fff; font-size:12.5px; }}
+  th, td {{ padding:8px 11px; border:1px solid var(--line); text-align:left; vertical-align:top; }}
+  th {{ background:#f2f1e8; font-weight:600; }}
+  .chip {{ display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; }}
+  blockquote {{ margin:0 0 12px; padding:10px 16px; border-left:3px solid var(--line); background:#fff; }}
+  blockquote p {{ margin:0 0 5px; font-style:italic; }}
+  blockquote footer {{ color:var(--muted); font-size:11.5px; }}
+  .callout.warn {{ padding:10px 14px; border-left:3px solid #c07f2d; background:#fdf6ea; color:#6b5a33; font-size:13px; }}
+  .footnote {{ color:var(--muted); font-size:11.5px; }}
+  code {{ font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }}
+  footer.page {{ margin-top:52px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:11.5px; }}
+  @media print {{ body {{ padding:20px; }} section {{ break-inside:avoid; }} }}
+  @media (max-width:640px) {{ .tiles {{ grid-template-columns:1fr; }} }}
+</style></head><body>
+<header>
+  <span class="eyebrow">EVIDENCE-TO-PERSONA POLICY REVIEW</span>
+  <h1>정책 검토 보고서</h1>
+  <p class="question">{question}</p>
+  <div class="meta">
+    <span>생성 <b>{escape(now()[:16].replace("T", " "))} UTC</b></span>
+    <span>대상 <b>{escape(_text(plan.get("target_population") or run.get("target_population")))}</b></span>
+    <span>근거 수준 <span class="badge">{escape(status_badge)}</span></span>
+    <span>run <code>{escape(_text(run.get("id")))}</code></span>
+  </div>
+  <p class="notice">{escape(REPORT_NOTICE)}</p>
+</header>
+{sections}
+<footer class="page">E2P Agent · 로컬 provenance artifact · 합성 패널 {len(panel)}명 · 이벤트 {len(run.get("events", []))}건</footer>
+</body></html>"""

@@ -38,6 +38,7 @@ ROOT = Path(os.getenv("PERSONA_RESTORER_ROOT", APP_ROOT)).resolve()
 STATIC = APP_ROOT / "static"
 agent = ResearchAgent(ROOT)
 RUN_LOCKS: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+ACTIVE_RUNS: set[str] = set()
 
 STREAM_TOOL_TEXT = {
     "policy.plan_request": "정책 대상, 핵심 가정, 권리 검토 기준을 설계했습니다.",
@@ -99,22 +100,86 @@ async def _payload(receive: Any) -> dict[str, Any]:
 
 
 async def _stream_agent_review(receive: Any, send: Any) -> None:
-    """Run the autonomous workflow while emitting answer and tool-state SSE frames."""
+    """Route one chat message to the conversational lane or the autonomous simulation workflow."""
     body = await _payload(receive)
-    created = await asyncio.to_thread(
-        agent.chat,
-        str(body.get("text", "")),
-        body.get("event_id"),
-    )
-    run_id = created["run"]["id"]
-    seen_events = len(created["run"].get("events", []))
+    text = str(body.get("text", ""))
+    session_id = str(body.get("session_id", "") or "")
     headers = [
         (b"content-type", b"text/event-stream; charset=utf-8"),
         (b"cache-control", b"no-cache, no-transform"),
         (b"x-accel-buffering", b"no"),
         (b"access-control-allow-origin", b"*"),
     ]
+    # LLM 분류·플랜 호출 전에 헤더부터 흘려보낸다 — 프록시 타임아웃과 무응답 UI를 막는다.
     await send({"type": "http.response.start", "status": 201, "headers": headers})
+    await _send_sse(send, "stream.open", {})
+    try:
+        intent = await asyncio.to_thread(agent.classify_intent, session_id, text)
+    except Exception:
+        intent = "policy_review"
+    if intent in ("conversation", "clarify"):
+        await _send_sse(send, "chat.accepted", {"mode": intent})
+        # Real token streaming: the worker thread reads the model's SSE and relays every delta immediately.
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def produce() -> None:
+            try:
+                for delta in agent.converse_stream(session_id, text, mode="clarify" if intent == "clarify" else "chat"):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except DomainError as error:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", error))
+            except Exception as error:
+                loop.call_soon_threadsafe(queue.put_nowait, ("fatal", error))
+
+        producer = loop.run_in_executor(None, produce)
+        pieces: list[str] = []
+        started = False
+        try:
+            while True:
+                kind, value = await queue.get()
+                if kind == "delta":
+                    if not started:
+                        started = True
+                        await _send_sse(send, "message.stream.start", {"phase": "final"})
+                    pieces.append(value)
+                    await _send_sse(send, "message.delta", {"delta": value})
+                elif kind == "done":
+                    if not started:
+                        await _send_sse(send, "message.stream.start", {"phase": "final"})
+                    await _send_sse(send, "chat.completed", {"reply": "".join(pieces)})
+                    break
+                elif kind == "error":
+                    await _send_sse(
+                        send, "error", {"code": value.code, "message": value.message, "details": value.details}
+                    )
+                    break
+                else:
+                    await _send_sse(
+                        send,
+                        "error",
+                        {
+                            "code": "INTERNAL_ERROR",
+                            "message": "대화 응답 중 오류가 발생했습니다.",
+                            "details": {"type": type(value).__name__},
+                        },
+                    )
+                    break
+        finally:
+            await producer
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        return
+    try:
+        created = await asyncio.to_thread(agent.chat, text, body.get("event_id"))
+    except DomainError as error:
+        await _send_sse(send, "error", {"code": error.code, "message": error.message, "details": error.details})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        return
+    run_id = created["run"]["id"]
+    ACTIVE_RUNS.add(run_id)
+    await asyncio.to_thread(agent.bind_session_run, session_id, run_id)
+    seen_events = len(created["run"].get("events", []))
     await _send_sse(send, "review.accepted", {"run": created["run"]})
     await _send_sse(send, "message.accepted", {"text": created["message"]})
 
@@ -125,16 +190,24 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
             "artifacts": {},
         }
         await _send_sse(send, "review.completed", completed)
+        ACTIVE_RUNS.discard(run_id)
         await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
 
     task = asyncio.create_task(asyncio.to_thread(agent.continue_autonomous_review, run_id, created["message"]))
+    insight_started = False
     try:
         while not task.done():
             current = await asyncio.to_thread(agent.store.get_run, run_id)
             events = current.get("events", [])
             new_events = events[seen_events:]
             for item in new_events:
+                if item.get("type") == "insight.delta":
+                    if not insight_started:
+                        insight_started = True
+                        await _send_sse(send, "message.stream.start", {"phase": "insight"})
+                    await _send_sse(send, "message.delta", {"delta": str(item.get("payload", {}).get("delta", ""))})
+                    continue
                 if item.get("type", "").startswith("tool."):
                     tool = str(item.get("payload", {}).get("tool", ""))
                     await _send_sse(
@@ -148,10 +221,10 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
                         },
                     )
                     if item["type"] == "tool.completed":
-                        text = STREAM_TOOL_TEXT.get(tool)
-                        if text:
+                        caption = STREAM_TOOL_TEXT.get(tool)
+                        if caption:
                             await _send_sse(send, "message.stream.start", {"phase": "tool"})
-                            await _send_text_delta(send, text)
+                            await _send_text_delta(send, caption)
             if new_events:
                 seen_events = len(events)
                 await _send_sse(send, "run.updated", {"run": current})
@@ -161,6 +234,12 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
         final_run = completed["run"]
         remaining = final_run.get("events", [])[seen_events:]
         for item in remaining:
+            if item.get("type") == "insight.delta":
+                if not insight_started:
+                    insight_started = True
+                    await _send_sse(send, "message.stream.start", {"phase": "insight"})
+                await _send_sse(send, "message.delta", {"delta": str(item.get("payload", {}).get("delta", ""))})
+                continue
             if item.get("type", "").startswith("tool."):
                 tool = str(item.get("payload", {}).get("tool", ""))
                 await _send_sse(
@@ -174,15 +253,17 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
                     },
                 )
                 if item["type"] == "tool.completed":
-                    text = STREAM_TOOL_TEXT.get(tool)
-                    if text:
+                    caption = STREAM_TOOL_TEXT.get(tool)
+                    if caption:
                         await _send_sse(send, "message.stream.start", {"phase": "tool"})
-                        await _send_text_delta(send, text)
+                        await _send_text_delta(send, caption)
         await _send_sse(send, "run.updated", {"run": final_run})
         await _send_sse(send, "research.completed", completed.get("research", {}))
         await _send_sse(send, "message.stream.start", {"phase": "final"})
         await _send_text_delta(send, completed["message"])
         await _send_sse(send, "review.completed", completed)
+        await asyncio.to_thread(agent.remember_turn, session_id, "user", text)
+        await asyncio.to_thread(agent.remember_turn, session_id, "agent", str(completed.get("message", "")))
     except Exception as error:  # The response already started; report a structured stream error.
         if isinstance(error, DomainError):
             payload = {"code": error.code, "message": error.message, "details": error.details}
@@ -194,6 +275,7 @@ async def _stream_agent_review(receive: Any, send: Any) -> None:
             }
         await _send_sse(send, "error", payload)
     finally:
+        ACTIVE_RUNS.discard(run_id)
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
@@ -231,6 +313,27 @@ async def _dispatch(method: str, path: str, receive: Any) -> tuple[int, bytes, s
         return _json(200, {"status": "ok", "root": str(ROOT)})
     if method == "GET" and path == "/api/source-catalog":
         return _json(200, await asyncio.to_thread(agent.source_catalog))
+    if method == "GET" and path == "/api/runs":
+        return _json(200, {"runs": await asyncio.to_thread(agent.store.list_runs, 8)})
+    if method == "DELETE" and path.startswith("/api/runs/") and path.count("/") == 3:
+        run_id = path.removeprefix("/api/runs/")
+        if run_id in ACTIVE_RUNS:
+            return _json(
+                409,
+                {"error": {"code": "RUN_BUSY", "message": "진행 중인 검토 실행은 완료된 뒤에 삭제할 수 있습니다."}},
+            )
+        async with RUN_LOCKS[run_id]:
+            await asyncio.to_thread(agent.store.delete_run, run_id)
+        return _json(200, {"deleted": run_id})
+    if method == "GET" and path == "/api/chats":
+        return _json(200, {"chats": await asyncio.to_thread(agent.list_chats, 8)})
+    if method == "GET" and path.startswith("/api/chats/"):
+        session_id = unquote(path.removeprefix("/api/chats/"))
+        return _json(200, await asyncio.to_thread(agent.get_chat, session_id))
+    if method == "DELETE" and path.startswith("/api/chats/"):
+        session_id = unquote(path.removeprefix("/api/chats/"))
+        await asyncio.to_thread(agent.delete_chat, session_id)
+        return _json(200, {"deleted": session_id})
     if method == "POST" and path == "/api/chat":
         body = await _payload(receive)
         return _json(201, await asyncio.to_thread(agent.chat, str(body.get("text", "")), body.get("event_id")))
@@ -335,7 +438,7 @@ async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
                 "status": 204,
                 "headers": [
                     (b"access-control-allow-origin", b"*"),
-                    (b"access-control-allow-methods", b"GET,POST,OPTIONS"),
+                    (b"access-control-allow-methods", b"GET,POST,DELETE,OPTIONS"),
                     (b"access-control-allow-headers", b"content-type"),
                 ],
             }

@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,6 +6,18 @@ from unittest.mock import patch
 
 from app.contracts import Source
 from app.service import ResearchAgent
+
+# Tests must never reach a real model API, even when a local .env was loaded by another module.
+os.environ.update(
+    {
+        "LLM_API_URL": "",
+        "LLM_API_KEY": "",
+        "LLM_MODEL": "",
+        "LLM_MODEL_FINAL": "",
+        "KOSIS_API_KEY": "",
+        "DATA_GO_KR_SERVICE_KEY": "",
+    }
+)
 
 
 class PolicyReviewTests(unittest.TestCase):
@@ -87,7 +100,7 @@ class PolicyReviewTests(unittest.TestCase):
         self.assertEqual(len(policy_review["interviews"]), len(policy_review["panel"]) * 3)
         self.assertIn("정책 사전검증 브리프", policy_review["brief"])
         report = self.agent.report(self.run["id"])
-        self.assertEqual(set(report["downloads"]), {"policy_brief", "panel", "interviews", "evidence"})
+        self.assertEqual(set(report["downloads"]), {"panel", "evidence"})
         for url in report["downloads"].values():
             self.assertTrue(
                 (Path(self.temp.name) / "data" / "runs" / self.run["id"] / url.rsplit("/", 1)[-1]).is_file()

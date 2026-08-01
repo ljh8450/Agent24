@@ -11,19 +11,16 @@
     <main class="workbench-shell" data-testid="app-shell">
       <aside class="workbench-sidebar" aria-label="정책 검토 탐색">
         <header class="sidebar-header">
-          <button class="product-brand" type="button" data-action="new-policy"><span class="brand-mark">◈</span><strong>Persona Restorer</strong></button>
+          <button class="product-brand" type="button" data-action="new-policy"><span class="brand-mark"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg></span><strong>Persona Restorer</strong></button>
           <button class="icon-button" type="button" title="사이드바 접기" aria-label="사이드바 접기">‹</button>
         </header>
-        <div class="sidebar-actions"><button class="new-study-button" type="button" data-action="new-policy"><span>＋</span><span>새 정책 검토</span></button></div>
-        <nav class="workspace-nav" aria-label="정책 검토 작업공간">
-          <button class="workspace-nav-item is-active" type="button"><span>▣</span><span>정책 검토</span></button>
-        </nav>
+        <div class="sidebar-actions"><button class="new-study-button" type="button" data-action="new-policy"><span class="sidebar-svg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span><span>새 정책 검토</span></button></div>
         <section class="project-list" aria-label="로컬 정책 검토">
           <div class="sidebar-label"><span>저장된 검토 세션</span><small id="study-count">0</small></div>
-          <label class="study-filter"><span>⌕</span><input id="study-filter" placeholder="세션 검색"></label>
+          <label class="study-filter"><span class="sidebar-svg"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span><input id="study-filter" placeholder="세션 검색"></label>
           <div id="study-list" class="study-filter-empty">새 정책 검토를 시작하세요.</div>
         </section>
-        <footer class="sidebar-bottom"><div class="orchestrator-status"><span>◌</span><span><strong>Evidence gateway</strong><small><i></i>로컬 연결됨</small></span></div></footer>
+        <footer class="sidebar-bottom"><div class="orchestrator-status"><span class="sidebar-svg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 3"/></svg></span><span><strong>Evidence gateway</strong><small><i></i>로컬 연결됨</small></span></div></footer>
       </aside>
 
       <section class="workbench-main">
@@ -35,14 +32,13 @@
 
         <div class="workbench-body">
           <section class="primary-workspace">
-            <section class="chat-view" aria-label="정책 검토 대화">
+            <section class="chat-view is-empty" aria-label="정책 검토 대화">
               <div class="chat-scroll" id="chat-scroll">
                 <div class="chat-thread">
-                  <header class="chat-study-header"><span>PUBLIC EVIDENCE · PGM · SYNTHETIC PANEL</span><h1>정책 검토 에이전트</h1><p id="run-subtitle">정책 의도 한 문장을 받으면 조사 설계, 한국 근거 수집, PGM, 합성 패널, 권리 검토와 보고서까지 에이전트가 실행합니다.</p></header>
+                  <header class="chat-study-header"><h1>정책 검토 에이전트</h1><p id="run-subtitle">정책 의도 한 문장을 받으면 조사 설계, 한국 근거 수집, PGM, 합성 패널, 권리 검토와 보고서까지 에이전트가 실행합니다.</p></header>
                   <section class="chat-message" id="welcome"><div class="chat-message-body"><strong>정책 검토 에이전트</strong><p>검토할 정책을 한 문장으로 적으세요. 사용자는 통계 변수나 API 값을 입력하지 않습니다. 모든 실행물과 출처는 우측 Artifacts에 남습니다.</p></div></section>
                   <section id="conversation" aria-live="polite"></section>
-                  <section id="search-results" class="source-results" data-testid="source-results" aria-live="polite"></section>
-                  <section id="policy-review" class="policy-review" data-testid="policy-review" aria-live="polite"></section>
+                  <section id="stream-tail" aria-live="polite"></section>
                 </div>
               </div>
               <form id="chat-form" class="chatgpt-composer" data-testid="research-composer">
@@ -67,9 +63,9 @@
       </section>
       <aside class="document-drawer" id="document-drawer" aria-label="문서 뷰어" aria-hidden="true">
         <div class="document-resizer" data-document-resizer aria-hidden="true"></div>
-        <header class="document-toolbar"><button type="button" data-document-close aria-label="문서 닫기">‹</button><span>▤</span><strong id="document-title">문서</strong><span class="document-spacer"></span><button type="button" data-document-download aria-label="다운로드">⇩</button><button type="button" data-document-close aria-label="문서 닫기">×</button></header>
+        <header class="document-toolbar"><strong id="document-title">문서</strong><span class="document-spacer"></span><button type="button" data-document-download aria-label="다운로드">⇩</button><button type="button" data-document-close aria-label="문서 닫기">×</button></header>
         <nav class="document-tabs" id="document-tabs" aria-label="열린 문서"></nav>
-        <iframe id="document-frame" title="문서 내용"></iframe>
+        <div class="document-content"><iframe id="document-frame" title="문서 내용" hidden></iframe><div id="document-native" class="document-native" hidden></div></div>
       </aside>
     </main>
     <script src="/app.js"></script>

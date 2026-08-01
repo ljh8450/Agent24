@@ -79,8 +79,22 @@ class GatewayEndpointTests(unittest.TestCase):
         self.original_agent = asgi.agent
         asgi.agent = ResearchAgent(Path(self.temp.name))
         asgi.RUN_LOCKS.clear()
+        # Tests must never reach a real model API, even when a local .env is configured.
+        self.env_guard = patch.dict(
+            "os.environ",
+            {
+                "LLM_API_URL": "",
+                "LLM_API_KEY": "",
+                "LLM_MODEL": "",
+                "LLM_MODEL_FINAL": "",
+                "KOSIS_API_KEY": "",
+                "DATA_GO_KR_SERVICE_KEY": "",
+            }
+        )
+        self.env_guard.start()
 
     def tearDown(self):
+        self.env_guard.stop()
         asgi.agent = self.original_agent
         asgi.RUN_LOCKS.clear()
         self.temp.cleanup()
@@ -122,7 +136,7 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertEqual(blocked["error"]["code"], "UNAUTHORIZED")
         status, cors_headers, _ = asyncio.run(request("OPTIONS", "/api/health"))
         self.assertEqual(status, 204)
-        self.assertEqual(cors_headers["access-control-allow-methods"], "GET,POST,OPTIONS")
+        self.assertEqual(cors_headers["access-control-allow-methods"], "GET,POST,DELETE,OPTIONS")
         status, _, catalog = self.call("GET", "/api/source-catalog")
         self.assertEqual(status, 200)
         self.assertIn("KOSIS 국가통계포털", [item["label"] for item in catalog["sources"]])
@@ -295,16 +309,16 @@ class GatewayEndpointTests(unittest.TestCase):
         status, headers, html = asyncio.run(request("GET", report["report_url"]))
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
-        self.assertIn(b'class="gt_table"', html)
-        status, markdown_headers, markdown = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/report.md"))
+        self.assertIn("정책 검토 보고서".encode(), html)
+        status, markdown_headers, markdown = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/panel.jsonl"))
         self.assertEqual(status, 200)
-        self.assertEqual(markdown_headers["content-type"], "text/markdown; charset=utf-8")
-        self.assertIn(b"#", markdown)
+        self.assertEqual(markdown_headers["content-type"], "application/x-ndjson; charset=utf-8")
+        self.assertIn(b"answers", markdown)
         status, json_headers, manifest = asyncio.run(request("GET", f"/api/runs/{run_id}/artifacts/run.json"))
         self.assertEqual(status, 200)
         self.assertEqual(json_headers["content-type"], "application/json; charset=utf-8")
         self.assertEqual(json.loads(manifest)["id"], run_id)
-        self.assertEqual(set(report["downloads"]), {"policy_brief", "panel", "interviews", "evidence"})
+        self.assertEqual(set(report["downloads"]), {"panel", "evidence"})
         for url in report["downloads"].values():
             status, _, artifact = asyncio.run(request("GET", url))
             self.assertEqual(status, 200)
@@ -359,7 +373,7 @@ class GatewayEndpointTests(unittest.TestCase):
         self.assertIn("report.write_provenance", tools)
         self.assertEqual(
             set(completed["artifacts"]),
-            {"html_report", "policy_brief", "panel", "interviews", "evidence"},
+            {"html_report", "panel", "evidence"},
         )
         for url in completed["artifacts"].values():
             artifact_status, _, artifact = asyncio.run(request("GET", url))

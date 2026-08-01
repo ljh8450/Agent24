@@ -55,6 +55,7 @@ test-results/
 # Runtime data
 data/persona_restorer.sqlite
 data/persona_restorer.sqlite-*
+data/chats/
 data/avatar-cache/
 data/runs/
 data/source-cache/

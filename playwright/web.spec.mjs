@@ -14,8 +14,8 @@ test("one policy sentence completes the agent workflow without manual controls",
 
 test("artifacts and provenance surface as read-only document cards in the chat", async ({ page }) => {
   await submitPolicy(page);
-  const openers = page.locator("#policy-review .artifact-openers");
-  await expect(openers).toContainText("전문 HTML 보고서");
+  const openers = page.locator("#artifact-openers-block");
+  await expect(openers).toContainText("종합 보고서");
   await expect(openers).toContainText("증거·프로버넌스");
   await expect(page.locator(".study-inspector")).toBeHidden();
   await expect(page.locator("#policy-review input, #policy-review textarea, #policy-review select")).toHaveCount(0);

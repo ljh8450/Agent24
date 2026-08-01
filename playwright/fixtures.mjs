@@ -13,9 +13,7 @@ export function completedReview() {
     },
     artifacts: {
       html_report: "/api/runs/run_ui_fixture/artifacts/report.html",
-      policy_brief: "/api/runs/run_ui_fixture/artifacts/policy_brief.md",
       panel: "/api/runs/run_ui_fixture/artifacts/panel.jsonl",
-      interviews: "/api/runs/run_ui_fixture/artifacts/interviews.jsonl",
       evidence: "/api/runs/run_ui_fixture/artifacts/evidence.json",
     },
     run: {
@@ -72,23 +70,36 @@ export function completedReview() {
         selected_model: "uninformed_maximum_entropy_scenario",
         identification: { lower: 0, upper: 1 },
         policy_review: {
-          status: "COMPLETED_WITHOUT_LLM_INTERVIEWS",
-          warning: "LLM이 설정되지 않아 모의 인터뷰와 반응률을 만들지 않았습니다.",
-          alternatives: [],
-          responses: {},
+          status: "COMPLETED_WITH_ASSUMPTIONS",
+          warning: "인터뷰는 PGM으로 가중된 완전 합성 패널에 대한 모델 모의 응답입니다.",
+          alternatives: [
+            { id: "original", label: "원안" },
+            { id: "alternative_1", label: "동일 선거연령 유지·시민정보 지원" },
+          ],
+          responses: { original: { support: 0.125, conditional: 0.125 } },
+          interviews: [
+            { segment_id: "P01", policy_id: "original", response: "conditional", reason: "표집된 속성만 참조한 가상 모의 응답입니다.", barrier: "등록·정보 접근 제약", suggested_change: "접근 지원을 별도 검증하세요.", tag: "narrative", mode: "configured_llm" },
+            { segment_id: "P02", policy_id: "original", response: "support", reason: "표집된 속성 기준의 가상 모의 응답입니다.", barrier: "식별되지 않음", suggested_change: "실제 조사로 확인하세요.", tag: "narrative", mode: "configured_llm" },
+          ],
           brief: "권리·법률 검토와 실제 조사 계획을 우선합니다.",
           panel: [
             {
               id: "P01",
+              display_name: "가온",
               avatar: { seed: "f3640270d85579d395da5591", url: "/api/avatars/notionists/f3640270d85579d395da5591.svg", alt: "P01의 장식용 Notionists 합성 아바타" },
               attributes: [{ variable: "age_eligibility_band", value: "18_27" }],
               weight_display: "12.5%",
+              evidence_level: "scenario_only",
+              narrative: "선거 연령 경계 구간에 속한 완전 합성 세그먼트입니다.",
             },
             {
               id: "P02",
+              display_name: "나래",
               avatar: { seed: "37ab708b043b9e741aa11355", url: "/api/avatars/notionists/37ab708b043b9e741aa11355.svg", alt: "P02의 장식용 Notionists 합성 아바타" },
               attributes: [{ variable: "age_eligibility_band", value: "28_plus" }],
               weight_display: "12.5%",
+              evidence_level: "scenario_only",
+              narrative: "기존 선거 연령 이상 구간의 완전 합성 세그먼트입니다.",
             },
           ],
         },
@@ -123,6 +134,32 @@ export async function mockAutonomousReview(page) {
       contentType: "text/html; charset=utf-8",
       body: "<!doctype html><html><body style=\"font-family:sans-serif;padding:32px\"><h1>정책 검토 보고서</h1><p>픽스처 문서 본문입니다.</p></body></html>",
     });
+  });
+  const completedForArtifacts = completedReview();
+  const fixtureReview = completedForArtifacts.run.result.policy_review;
+  const alternativeLabels = new Map(fixtureReview.alternatives.map((item) => [item.id, item.label]));
+  const mergedPanel = fixtureReview.panel.map((segment) => ({
+    id: segment.id,
+    name: segment.display_name,
+    attributes: Object.fromEntries(segment.attributes.map((attr) => [attr.variable, attr.value])),
+    share: segment.weight_display,
+    narrative: segment.narrative,
+    answers: fixtureReview.interviews
+      .filter((item) => item.segment_id === segment.id)
+      .map((item) => ({
+        policy_id: item.policy_id,
+        policy: alternativeLabels.get(item.policy_id) || item.policy_id,
+        response: item.response,
+        reason: item.reason,
+        barrier: item.barrier,
+        suggestion: item.suggested_change,
+      })),
+  }));
+  await page.route("**/api/runs/run_ui_fixture/artifacts/panel.jsonl", async (route) => {
+    await route.fulfill({ contentType: "application/x-ndjson; charset=utf-8", body: mergedPanel.map((item) => JSON.stringify(item)).join("\n") });
+  });
+  await page.route("**/api/runs/run_ui_fixture/artifacts/evidence.json", async (route) => {
+    await route.fulfill({ contentType: "application/json; charset=utf-8", body: JSON.stringify({ sources: [{ id: "src_1", organization: "국가법령정보센터" }], constraints: [] }, null, 2) });
   });
   await page.route("**/api/avatars/notionists/*.svg", async (route) => {
     await route.fulfill({

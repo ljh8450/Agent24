@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -238,12 +239,130 @@ def _is_unsafe(question: str) -> str | None:
     return None
 
 
-def build_policy_plan(question: str, fallback_target: str) -> dict[str, Any]:
+DEFAULT_INTERVIEW_QUESTIONS = [
+    "이 정책안을 이용할 의향이 있나요?",
+    "이용 또는 미이용의 가장 큰 장벽은 무엇인가요?",
+    "어떤 조건이 바뀌면 이용 가능성이 달라질까요?",
+    "이 정책에서 빠질 가능성이 큰 집단은 누구인가요?",
+    "정책을 더 공정하고 접근 가능하게 바꾸려면 무엇이 필요할까요?",
+]
+
+
+def _normalized_llm_plan(raw: object) -> dict[str, Any] | None:
+    """Validate a model-designed plan; any violation falls back to the keyword templates."""
+    if not isinstance(raw, dict):
+        return None
+    variables_raw = raw.get("variables")
+    if not isinstance(variables_raw, list) or not 2 <= len(variables_raw) <= 4:
+        return None
+    variables: list[dict[str, Any]] = []
+    for item in variables_raw:
+        if not isinstance(item, dict):
+            return None
+        var_id = re.sub(r"\s+", "_", str(item.get("id", "")).strip())[:60]
+        label = str(item.get("label", "")).strip()
+        categories_raw = item.get("categories")
+        if not var_id or not label:
+            return None
+        if not isinstance(categories_raw, list) or not 2 <= len(categories_raw) <= 4:
+            return None
+        categories = [str(category).strip() for category in categories_raw]
+        if not all(categories) or len(set(categories)) != len(categories):
+            return None
+        variables.append({"id": var_id, "label": label, "categories": categories})
+    if len({item["id"] for item in variables}) != len(variables):
+        return None
+    alternatives_raw = raw.get("alternatives")
+    if not isinstance(alternatives_raw, list) or not 1 <= len(alternatives_raw) <= 3:
+        return None
+    alternatives: list[tuple[str, str, str]] = []
+    for item in alternatives_raw:
+        if not isinstance(item, dict) or not str(item.get("label", "")).strip():
+            return None
+        alternatives.append(
+            (
+                str(item["label"]).strip(),
+                str(item.get("hypothesis", "")).strip() or "가상 패널에서 수혜 분포와 접근 장벽을 비교합니다.",
+                str(item.get("risk", "")).strip() or "실제 시민 반응이나 인과효과를 뜻하지 않습니다.",
+            )
+        )
+    queries = [str(query).strip() for query in raw.get("evidence_queries") or [] if str(query).strip()][:6]
+    kosis_terms = [
+        str(term).strip()
+        for term in raw.get("kosis_search_terms") or []
+        if isinstance(term, str) and 2 <= len(str(term).strip()) <= 30
+    ][:4]
+    questions = [str(question).strip() for question in raw.get("interview_questions") or [] if str(question).strip()][:6]
+    assumptions = [
+        {"field": str(item.get("field", "")), "value": str(item.get("value", "")), "reason": str(item.get("reason", ""))}
+        for item in (raw.get("assumptions") or [])
+        if isinstance(item, dict) and str(item.get("field", "")).strip()
+    ]
+    rights_raw = raw.get("rights_review")
+    rights_review = None
+    if isinstance(rights_raw, dict) and str(rights_raw.get("finding", "")).strip():
+        rights_review = {
+            "severity": str(rights_raw.get("severity", "medium")),
+            "finding": str(rights_raw["finding"]).strip(),
+            "issues": [str(issue).strip() for issue in rights_raw.get("issues") or [] if str(issue).strip()][:6],
+        }
+    focus = str(raw.get("policy_focus", "")).strip()
+    if not focus or not queries:
+        return None
+    return {
+        "policy_focus": focus,
+        "target_population": str(raw.get("target_population", "")).strip(),
+        "variables": variables,
+        "alternatives": alternatives,
+        "evidence_queries": queries,
+        "kosis_search_terms": kosis_terms,
+        "interview_questions": questions,
+        "assumptions": assumptions,
+        "rights_review": rights_review,
+    }
+
+
+def build_policy_plan(question: str, fallback_target: str, llm_raw: object = None) -> dict[str, Any]:
     question = _clean(question)
     blocked_reason = _is_unsafe(question)
     theme = _theme(question)
     target, assumptions = _target(question, fallback_target)
     plan_id = f"plan_{hashlib.sha256(question.encode()).hexdigest()[:12]}"
+    llm_plan = _normalized_llm_plan(llm_raw) if not blocked_reason else None
+    if llm_plan:
+        plan_source = "llm_designed"
+        policy_domain = "llm_designed"
+        policy_focus = llm_plan["policy_focus"]
+        variables = llm_plan["variables"]
+        alternative_tuples = llm_plan["alternatives"]
+        queries = llm_plan["evidence_queries"]
+        kosis_search_terms = llm_plan["kosis_search_terms"]
+        interview_questions = llm_plan["interview_questions"] or DEFAULT_INTERVIEW_QUESTIONS
+        target = llm_plan["target_population"] or target
+        assumptions = assumptions + llm_plan["assumptions"]
+        rights_review = llm_plan["rights_review"] or theme.get("rights_review")
+    else:
+        plan_source = "keyword_template"
+        policy_domain = theme["id"]
+        policy_focus = theme["label"]
+        kosis_search_terms = [theme["label"]]
+        variables = theme["variables"]
+        alternative_tuples = theme["alternatives"]
+        interview_questions = DEFAULT_INTERVIEW_QUESTIONS
+        rights_review = theme.get("rights_review")
+        queries = [
+            f"KOSIS {target} {theme['label']} 통계",
+            f"공공데이터포털 {target} {theme['label']} 정책",
+            f"국회입법조사처 {theme['label']} 정책 보고서",
+            f"ScienceON {target} {theme['label']} 연구",
+        ]
+        if theme["id"] == "democratic_rights":
+            queries = [
+                "국가법령정보센터 공직선거법 선거권 연령",
+                "중앙선거관리위원회 선거권 연령 대학생",
+                "국회입법조사처 선거권 연령 평등선거",
+                f"KOSIS {target} 연령별 인구 대학생",
+            ]
     alternatives = [
         {
             "id": "original",
@@ -260,49 +379,37 @@ def build_policy_plan(question: str, fallback_target: str) -> dict[str, Any]:
                 "description": label,
                 "hypothesis": hypothesis,
                 "risk": risk,
-                "origin": "planner_narrative",
+                "origin": "planner_llm" if llm_plan else "planner_narrative",
             }
-            for index, (label, hypothesis, risk) in enumerate(theme["alternatives"], start=1)
+            for index, (label, hypothesis, risk) in enumerate(alternative_tuples, start=1)
         ],
     ]
-    queries = [
-        f"KOSIS {target} {theme['label']} 통계",
-        f"공공데이터포털 {target} {theme['label']} 정책",
-        f"국회입법조사처 {theme['label']} 정책 보고서",
-        f"ScienceON {target} {theme['label']} 연구",
-    ]
-    if theme["id"] == "democratic_rights":
-        queries = [
-            "국가법령정보센터 공직선거법 선거권 연령",
-            "중앙선거관리위원회 선거권 연령 대학생",
-            "국회입법조사처 선거권 연령 평등선거",
-            f"KOSIS {target} 연령별 인구 대학생",
-        ]
     return {
         "id": plan_id,
         "status": "SAFETY_BLOCKED" if blocked_reason else "COMPLETED_WITH_ASSUMPTIONS" if assumptions else "PLANNED",
-        "policy_domain": theme["id"],
-        "policy_focus": theme["label"],
+        "plan_source": plan_source,
+        "policy_domain": policy_domain,
+        "policy_focus": policy_focus,
         "target_population": target,
-        "proposed_variables": theme["variables"],
+        "proposed_variables": variables,
         "assumptions": assumptions,
         "blocked_reason": blocked_reason,
         "alternatives": alternatives,
-        "interview_questions": [
-            "이 정책안을 이용할 의향이 있나요?",
-            "이용 또는 미이용의 가장 큰 장벽은 무엇인가요?",
-            "어떤 조건이 바뀌면 이용 가능성이 달라질까요?",
-            "이 정책에서 빠질 가능성이 큰 집단은 누구인가요?",
-            "정책을 더 공정하고 접근 가능하게 바꾸려면 무엇이 필요할까요?",
-        ],
+        "interview_questions": interview_questions,
         "evidence_queries": queries,
+        "kosis_search_terms": kosis_search_terms,
         "review_gates": [
             "통계표의 모집단·시점·범주가 대상 정의와 호환되는지 검토",
             "수치·분모·가중 여부가 확인된 후보만 제약으로 승인",
             "가상 패널의 응답은 실제 찬성률·정책 효과로 해석하지 않음",
         ],
-        "rights_review": theme.get("rights_review"),
+        "rights_review": rights_review,
     }
+
+
+SYNTHETIC_SEGMENT_NAMES = (
+    "가온", "나래", "다온", "라온", "마루", "보라", "새론", "아람", "이든", "재이", "하늘", "온유",
+)
 
 
 def weighted_segments(
@@ -311,10 +418,22 @@ def weighted_segments(
     limit: int = 12,
     evidence_level: str = "partial_estimate",
 ) -> list[dict[str, Any]]:
-    ranked = sorted(zip(states, distribution, strict=True), key=lambda item: item[1], reverse=True)[:limit]
+    # 같은 가중치 셀만 상위에 몰리면 차등 분포가 있어도 균일해 보인다 —
+    # 가중치 티어별 라운드로빈으로 뽑아 패널이 분포의 실제 모양을 드러내게 한다.
+    tiers: dict[float, list[tuple[dict[str, str], float]]] = {}
+    for state, weight in sorted(zip(states, distribution, strict=True), key=lambda item: item[1], reverse=True):
+        tiers.setdefault(round(float(weight), 6), []).append((state, float(weight)))
+    ranked: list[tuple[dict[str, str], float]] = []
+    while len(ranked) < limit and any(tiers.values()):
+        for key in sorted(tiers, reverse=True):
+            if tiers[key]:
+                ranked.append(tiers[key].pop(0))
+                if len(ranked) >= limit:
+                    break
     return [
         {
             "id": f"P{index:02d}",
+            "display_name": SYNTHETIC_SEGMENT_NAMES[(index - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
             "avatar": notionists_avatar(f"P{index:02d}"),
             "attributes": [{"variable": key, "value": value, "tag": "model_weighted"} for key, value in state.items()],
             "weight": float(weight),
@@ -330,6 +449,52 @@ def weighted_segments(
     ]
 
 
+def sampled_segments(
+    states: list[dict[str, str]],
+    distribution: list[float],
+    size: int = 12,
+    evidence_level: str = "partial_estimate",
+) -> list[dict[str, Any]]:
+    """Draw a proportional synthetic sample: high-share cells appear multiple times, tiny cells dilute away.
+
+    Deterministic largest-remainder quotas keep the panel composition faithful to the joint
+    distribution, so plain answer counts over the sample ARE the weighted statistics.
+    """
+    total = sum(float(weight) for weight in distribution) or 1.0
+    shares = [max(0.0, float(weight)) / total for weight in distribution]
+    quotas = [share * size for share in shares]
+    counts = [int(quota) for quota in quotas]
+    for index in sorted(range(len(quotas)), key=lambda i: quotas[i] - counts[i], reverse=True)[: size - sum(counts)]:
+        counts[index] += 1
+    boundary = (
+        "표본 구성은 승인된 정량 제약이 없어 균등 시나리오 분포에서 비례 표집한 것입니다. 모집단 추정치가 아닙니다."
+        if evidence_level == "scenario_only"
+        else "표본 구성은 승인된 제약과 선택한 PGM 점모형의 결합분포에서 비례 표집한 것이며 실제 개인이나 대표 표본이 아닙니다."
+    )
+    personas: list[dict[str, Any]] = []
+    for state_index in sorted(range(len(states)), key=lambda i: shares[i], reverse=True):
+        for _ in range(counts[state_index]):
+            position = len(personas) + 1
+            pid = f"P{position:02d}"
+            personas.append(
+                {
+                    "id": pid,
+                    "display_name": SYNTHETIC_SEGMENT_NAMES[(position - 1) % len(SYNTHETIC_SEGMENT_NAMES)],
+                    "avatar": notionists_avatar(pid),
+                    "attributes": [
+                        {"variable": key, "value": value, "tag": "model_weighted"}
+                        for key, value in states[state_index].items()
+                    ],
+                    "weight": 1.0 / size,
+                    "weight_display": f"{shares[state_index] * 100:.1f}%",
+                    "cell_share": shares[state_index],
+                    "evidence_level": evidence_level,
+                    "boundary": boundary,
+                }
+            )
+    return personas
+
+
 def summarize_panel_interviews(panel: list[dict[str, Any]], interviews: list[dict[str, Any]]) -> dict[str, Any]:
     by_option: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for interview in interviews:
@@ -342,7 +507,46 @@ def summarize_panel_interviews(panel: list[dict[str, Any]], interviews: list[dic
     }
 
 
-def policy_brief(plan: dict[str, Any], panel: list[dict[str, Any]], interviews: list[dict[str, Any]]) -> str:
+RESPONSE_LABELS = {"support": "긍정", "conditional": "조건부", "low_change": "변화 낮음", "decline": "거부"}
+
+
+def _panel_voice_lines(
+    plan: dict[str, Any], panel: list[dict[str, Any]], interviews: list[dict[str, Any]]
+) -> list[str]:
+    weights = {item["id"]: float(item.get("cell_share", item.get("weight", 0.0))) for item in panel}
+    names = {item["id"]: item.get("display_name") or item["id"] for item in panel}
+    lines: list[str] = []
+    for option in plan.get("alternatives", []):
+        answers = []
+        seen_reasons: set[str] = set()
+        for item in sorted(
+            (entry for entry in interviews if entry.get("policy_id") == option["id"]),
+            key=lambda entry: weights.get(entry.get("segment_id"), 0.0),
+            reverse=True,
+        ):
+            reason = str(item.get("reason", ""))
+            if reason in seen_reasons:
+                continue
+            seen_reasons.add(reason)
+            answers.append(item)
+            if len(answers) >= 2:
+                break
+        for item in answers:
+            label = RESPONSE_LABELS.get(item.get("response"), item.get("response"))
+            speaker = names.get(item.get("segment_id"), item.get("segment_id"))
+            lines.append(
+                f"- **{option['label']} · 가상 인물 {speaker} ({label})** — “{item.get('reason', '')}”"
+                + (f" / 장벽: {item.get('barrier')}" if item.get("barrier") else "")
+            )
+    return lines
+
+
+def policy_brief(
+    plan: dict[str, Any],
+    panel: list[dict[str, Any]],
+    interviews: list[dict[str, Any]],
+    insights: str | None = None,
+) -> str:
     summary = summarize_panel_interviews(panel, interviews)
     alternatives = {item["id"]: item for item in plan["alternatives"]}
     ranked = sorted(
@@ -364,11 +568,20 @@ def policy_brief(plan: dict[str, Any], panel: list[dict[str, Any]], interviews: 
                 "",
                 "## 판정\n가상 패널 모의 인터뷰 기준으로는 원안 단독 확정보다, 상위 대안을 포함한 소규모 시범사업 검증을 권장합니다.",
                 "",
+                *([insights.replace("### ", "## "), ""] if insights else []),
                 "## 우선 검토안\n"
                 + (
                     f"{preferred['label']} — {preferred['hypothesis']}"
                     if preferred
                     else "검증된 인터뷰 응답이 없어 정책안 순위를 만들지 않았습니다. 권리·법률 검토와 실제 시범조사를 우선하세요."
+                ),
+                "",
+                "## 패널 목소리 (합성 모의 인터뷰)\n"
+                + (
+                    "\n".join(_panel_voice_lines(plan, panel, interviews))
+                    + "\n\n모든 인용은 통계 가중 합성 세그먼트의 모델 모의 응답이며 실제 시민 발화가 아닙니다."
+                    if _panel_voice_lines(plan, panel, interviews)
+                    else "모의 인터뷰가 실행되지 않아 인용할 패널 목소리가 없습니다."
                 ),
                 "",
                 "## 권리·법률 사전검토\n"

@@ -1,9 +1,22 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from app.contracts import Source
 from app.service import ResearchAgent
+
+# Tests must never reach a real model API, even when a local .env was loaded by another module.
+os.environ.update(
+    {
+        "LLM_API_URL": "",
+        "LLM_API_KEY": "",
+        "LLM_MODEL": "",
+        "LLM_MODEL_FINAL": "",
+        "KOSIS_API_KEY": "",
+        "DATA_GO_KR_SERVICE_KEY": "",
+    }
+)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -87,9 +100,13 @@ class WorkflowTests(unittest.TestCase):
         evaluated = self.agent.evaluate_holdout(self.run["id"], {"actual_distribution": actual})
         self.assertAlmostEqual(evaluated["result"]["holdout"]["evaluation"]["tv_distance"], 0.0)
         report = self.agent.report(self.run["id"])
-        self.assertIn("가정 없는 식별구간", report["markdown"])
-        self.assertIn("봉인 홀드아웃 채점", report["markdown"])
-        self.assertTrue((Path(self.temp.name) / report["artifact"]).is_file())
+        report_path = Path(self.temp.name) / report["artifact"]
+        self.assertTrue(report_path.is_file())
+        html = report_path.read_text(encoding="utf-8")
+        self.assertIn("가정 없는 식별구간", html)
+        self.assertIn("정책 검토 보고서", html)
+        self.assertIn("봉인 홀드아웃 채점", html)
+        self.assertIn("Total variation distance", html)
 
     def test_unknown_population_constraint_requires_explicit_override(self):
         self.agent.set_variables(self.run["id"], {"variables": [{"id": "region", "categories": ["daejeon", "other"]}]})

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -11,19 +12,32 @@ from .contracts import Constraint, Variable, new_id, now, parse_variables, valid
 from .errors import DomainError
 from .personas import (
     answer_persona_question,
+    classify_chat_intent,
+    converse_with_memory,
+    converse_with_memory_stream,
     extract_constraint_candidates,
     generate_narratives,
+    llm_policy_plan,
+    narrate_panel_segments,
     sample_personas,
     simulate_policy_interviews,
     simulate_survey,
+    synthesize_policy_insights,
 )
-from .policy_review import build_policy_plan, policy_brief, summarize_panel_interviews, weighted_segments
-from .reporting import render_html_report, render_markdown_report
+from .policy_review import (
+    build_policy_plan,
+    policy_brief,
+    sampled_segments,
+    summarize_panel_interviews,
+    weighted_segments,
+)
+from .reporting import render_html_report
 from .sources import (
     fetch_data_go_api,
     fetch_kosis_statistics,
     fetch_source,
     korean_source_catalog,
+    search_kosis_tables,
     search_public_web,
     source_excerpt,
 )
@@ -37,6 +51,154 @@ class ResearchAgent:
     def __init__(self, root: Path):
         self.root = root
         self.store = ProjectStore(root)
+        # Session-scoped conversational memory: survives across turns of one web session,
+        # intentionally in-process only (not part of the auditable run provenance).
+        self.chat_memory: dict[str, list[dict[str, str]]] = {}
+        self.session_last_run: dict[str, str] = {}
+
+    def _chat_path(self, session_id: str) -> Path:
+        safe = re.sub(r"[^0-9A-Za-z_-]", "_", session_id)[:80]
+        return self.store.data_dir / "chats" / f"{safe}.json"
+
+    def _load_chat(self, session_id: str) -> None:
+        if not session_id or session_id in self.chat_memory:
+            return
+        path = self._chat_path(session_id)
+        if not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        self.chat_memory[session_id] = list(data.get("turns") or [])[-24:]
+        if data.get("last_run_id"):
+            self.session_last_run.setdefault(session_id, str(data["last_run_id"]))
+
+    def _persist_chat(self, session_id: str) -> None:
+        path = self._chat_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "session_id": session_id,
+            "updated_at": now(),
+            "turns": self.chat_memory.get(session_id, []),
+            "last_run_id": self.session_last_run.get(session_id),
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def list_chats(self, limit: int = 8) -> list[dict[str, Any]]:
+        directory = self.store.data_dir / "chats"
+        if not directory.is_dir():
+            return []
+        chats: list[dict[str, Any]] = []
+        for path in sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:limit]:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            turns = list(data.get("turns") or [])
+            title = next((turn.get("text", "") for turn in turns if turn.get("role") == "user"), "대화")
+            chats.append(
+                {
+                    "session_id": str(data.get("session_id") or path.stem),
+                    "title": title[:80],
+                    "updated_at": data.get("updated_at"),
+                    "turns": turns,
+                    "last_run_id": data.get("last_run_id"),
+                }
+            )
+        return chats
+
+    def get_chat(self, session_id: str) -> dict[str, Any]:
+        self._load_chat(session_id)
+        return {
+            "session_id": session_id,
+            "turns": self.chat_memory.get(session_id, []),
+            "last_run_id": self.session_last_run.get(session_id),
+        }
+
+    def delete_chat(self, session_id: str) -> None:
+        self.chat_memory.pop(session_id, None)
+        self.session_last_run.pop(session_id, None)
+        path = self._chat_path(session_id)
+        if path.is_file():
+            path.unlink()
+
+    def classify_intent(self, session_id: str, text: str) -> str:
+        if not session_id or os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1":
+            return "policy_review"
+        self._load_chat(session_id)
+        try:
+            return classify_chat_intent(text, bool(self.chat_memory.get(session_id)))
+        except DomainError:
+            return "policy_review"
+
+    def remember_turn(self, session_id: str, role: str, text: str) -> None:
+        if not session_id or not text:
+            return
+        self._load_chat(session_id)
+        memory = self.chat_memory.setdefault(session_id, [])
+        memory.append({"role": role, "text": text[:2000]})
+        del memory[:-24]
+        self._persist_chat(session_id)
+
+    def bind_session_run(self, session_id: str, run_id: str) -> None:
+        if session_id:
+            self.session_last_run[session_id] = run_id
+
+    def _session_run_context(self, session_id: str) -> str:
+        run_id = self.session_last_run.get(session_id)
+        if not run_id:
+            return ""
+        try:
+            run = self.store.get_run(run_id)
+        except DomainError:
+            return ""
+        result = run.get("result") or {}
+        review = result.get("policy_review") or {}
+        parts = [
+            f"질문: {run.get('question')}",
+            f"상태: {run.get('status')} / 근거 수준: {result.get('status')}",
+            f"정책안 반응: {json.dumps(review.get('responses') or {}, ensure_ascii=False)}",
+        ]
+        if review.get("insights"):
+            parts.append(f"인사이트: {str(review['insights'])[:1200]}")
+        if review.get("panel"):
+            parts.append(
+                "패널(가상 인물 — 답변에서는 이름으로 지칭): "
+                + "; ".join(
+                    f"{segment.get('display_name') or segment.get('id')}({segment.get('weight_display')}) "
+                    + ",".join(f"{attr.get('variable')}={attr.get('value')}" for attr in segment.get("attributes", []))
+                    for segment in review["panel"][:8]
+                )
+            )
+        return "\n".join(parts)
+
+    def converse(self, session_id: str, text: str) -> str:
+        self._load_chat(session_id)
+        memory = list(self.chat_memory.get(session_id) or [])[-12:]
+        reply = converse_with_memory(text, memory, self._session_run_context(session_id))
+        self.remember_turn(session_id, "user", text)
+        self.remember_turn(session_id, "agent", reply)
+        return reply
+
+    def converse_stream(self, session_id: str, text: str, mode: str = "chat"):
+        """Yield the conversational reply token-by-token, persisting the exchange at the end."""
+        self._load_chat(session_id)
+        memory = list(self.chat_memory.get(session_id) or [])[-12:]
+        context = self._session_run_context(session_id)
+        pieces: list[str] = []
+        completed = False
+        try:
+            for delta in converse_with_memory_stream(text, memory, context, mode=mode):
+                pieces.append(delta)
+                yield delta
+            completed = True
+        finally:
+            reply = "".join(pieces).strip()
+            # 스트림이 중간에 실패한 답변은 오류로 표시되므로 세션 기록에 남기지 않는다.
+            if completed and reply:
+                self.remember_turn(session_id, "user", text)
+                self.remember_turn(session_id, "agent", reply)
 
     def chat(self, text: str, client_event_id: str | None = None) -> dict[str, Any]:
         question = " ".join(text.split())
@@ -54,7 +216,16 @@ class ResearchAgent:
         }
         stored = self.store.create_run(run, client_event_id)
         self.store.append_event(stored["id"], "tool.completed", {"tool": "agent.intake_question"})
-        plan = build_policy_plan(question, target)
+        llm_raw = None
+        if os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") != "1":
+            try:
+                llm_raw = llm_policy_plan(question)
+            except DomainError:
+                llm_raw = None
+        plan = build_policy_plan(question, target, llm_raw=llm_raw)
+        self.store.append_event(
+            stored["id"], "policy.plan_designed", {"plan_source": plan.get("plan_source", "keyword_template")}
+        )
         self.store.append_event(stored["id"], "policy.plan_created", {"plan": plan})
         if plan["status"] == "SAFETY_BLOCKED":
             self.store.update_run(stored["id"], status="safety_blocked")
@@ -129,6 +300,7 @@ class ResearchAgent:
             )
 
         stored_sources, excluded = self._autonomous_source_snapshots(run_id, research["results"])
+        stored_sources = stored_sources + self._autonomous_kosis_evidence(run_id, plan)
         llm_ready = all(os.getenv(name) for name in ("LLM_API_URL", "LLM_API_KEY", "LLM_MODEL"))
         self._autonomous_constraint_extraction(run_id, stored_sources, llm_ready)
         approved_ids = self._autonomous_evidence_gate(run_id)
@@ -184,11 +356,14 @@ class ResearchAgent:
                 self.store.append_event(
                     run_id, "tool.failed", {"tool": "policy.weighted_panel_interviews", "code": error.code}
                 )
+            failure_detail = error.code + (
+                f" · {error.details['reason']}" if error.details.get("reason") else ""
+            )
             self._policy_review_without_llm(
                 run_id,
                 warning=(
                     "LLM 모의 인터뷰 호출이 완료되지 않아 응답률을 만들지 않았습니다. "
-                    f"합성 프로필과 통계·시나리오 상태만 표시합니다. (사유: {error.code})"
+                    f"합성 프로필과 통계·시나리오 상태만 표시합니다. (사유: {failure_detail})"
                     if error.code != "LLM_NOT_CONFIGURED"
                     else None
                 ),
@@ -196,6 +371,18 @@ class ResearchAgent:
             panel_outcome = (
                 "profiles_only_no_llm" if error.code == "LLM_NOT_CONFIGURED" else "profiles_only_llm_failure"
             )
+        except Exception as error:  # 패널 단계의 예기치 못한 실패가 전체 실행을 죽이면 안 된다.
+            self.store.append_event(
+                run_id, "tool.failed", {"tool": "policy.weighted_panel_interviews", "code": type(error).__name__}
+            )
+            self._policy_review_without_llm(
+                run_id,
+                warning=(
+                    "모의 인터뷰 처리 중 내부 오류가 발생해 응답률을 만들지 않았습니다. "
+                    f"합성 프로필과 통계·시나리오 상태만 표시합니다. (사유: {type(error).__name__})"
+                ),
+            )
+            panel_outcome = "profiles_only_internal_error"
         self.store.append_event(
             run_id,
             "tool.completed",
@@ -219,6 +406,94 @@ class ResearchAgent:
             "artifacts": {"html_report": report["report_url"], **report["downloads"]},
         }
 
+    def _autonomous_kosis_evidence(self, run_id: str, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """Pull real published proportions straight from KOSIS OpenAPI for the plan variables."""
+        if not os.getenv("KOSIS_API_KEY"):
+            return []
+
+        # KOSIS 통합검색은 짧은 주제 키워드에만 반응한다 — 플랜 모델이 설계한 검색어를 우선 사용한다.
+        stopwords = {
+            "수원", "수원시", "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기",
+            "전국", "정책", "검토", "도입", "확대", "프로그램", "여부", "구간", "형태",
+        }
+        queries = [str(term).strip() for term in plan.get("kosis_search_terms") or [] if str(term).strip()][:4]
+        if not queries:
+            tokens = [
+                token
+                for token in re.split(r"[^0-9A-Za-z가-힣]+", str(plan.get("policy_focus") or ""))
+                if len(token) >= 2 and token not in stopwords
+            ]
+            queries = list(dict.fromkeys(tokens))[:3]
+        self.store.append_event(run_id, "tool.started", {"tool": "kosis.statistics_openapi", "queries": queries})
+        stored: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        def rate_table(table: dict[str, str]) -> bool:
+            return any(token in table["table_name"] for token in ("율", "률", "비율", "비중", "분포"))
+
+        collected: list[dict[str, str]] = []
+        for query in queries:
+            try:
+                collected.extend(search_kosis_tables(query, 3))
+            except DomainError:
+                continue
+        # 참여비용 같은 금액 표에서는 비율 제약이 나올 수 없으니 비율 표를 우선한다.
+        for table in sorted(collected, key=lambda item: not rate_table(item)):
+            key = (table["org_id"], table["table_id"])
+            if key in seen or len(stored) >= 3:
+                continue
+            seen.add(key)
+            payload = {
+                "org_id": table["org_id"],
+                "table_id": table["table_id"],
+                "item_id": "ALL",
+                "classification_1": "ALL",
+                "period_type": "Y",
+                "newest_period_count": "2",
+                "title": table["table_name"],
+                "survey_name": table["survey_name"],
+                "population": table["path"] or "통계표 원문에서 검토 필요",
+            }
+            source = None
+            for extra in (
+                {},
+                {"classification_2": "ALL"},
+                {"classification_2": "ALL", "classification_3": "ALL"},
+                {"classification_2": "ALL", "classification_3": "ALL", "classification_4": "ALL"},
+            ):
+                try:
+                    candidate = fetch_kosis_statistics(self.root, {**payload, **extra})
+                except DomainError:
+                    continue
+                head = source_excerpt(self.root, candidate.as_dict(), 4000)
+                if '"err"' in head[:80] or '"UNIT_NM":"%"' not in head.replace(" ", ""):
+                    continue
+                source = candidate
+                break
+            if source is None:
+                continue
+            self.store.add_source(run_id, source.as_dict())
+            stored.append(source.as_dict())
+        self.store.append_event(
+            run_id, "tool.completed", {"tool": "kosis.statistics_openapi", "stored": len(stored)}
+        )
+        return stored
+
+    @staticmethod
+    def _looks_like_content_url(url: str) -> bool:
+        """Navigation, login and portal home pages never carry the published numbers."""
+        lowered = url.lower()
+        if any(token in lowered for token in ("login", "signin", "sso.", "/member", "/join", "/search?")):
+            return False
+        from urllib.parse import urlparse
+
+        parsed = urlparse(lowered)
+        path = parsed.path.strip("/")
+        if not path and not parsed.query:
+            return False
+        if path in {"index.do", "index", "main.do", "main", "eng", "kor"} and not parsed.query:
+            return False
+        return True
+
     @staticmethod
     def _adult_scope(run: dict[str, Any]) -> bool:
         text = f"{run.get('question', '')} {run.get('target_population', '')}"
@@ -239,8 +514,10 @@ class ResearchAgent:
         trusted = [
             item
             for item in candidates
-            if item.get("trust_tier") in {"korean_official", "korean_research"} and item.get("url")
-        ][:4]
+            if item.get("trust_tier") in {"korean_official", "korean_research"}
+            and item.get("url")
+            and self._looks_like_content_url(str(item["url"]))
+        ][:5]
         self.store.append_event(run_id, "tool.started", {"tool": "source.fetch_snapshot", "count": len(trusted)})
         run = self.store.get_run(run_id)
         stored: list[dict[str, Any]] = []
@@ -287,15 +564,18 @@ class ResearchAgent:
             )
             return
         accepted = 0
-        for source in sources:
-            try:
-                accepted += len(self.extract_candidates(run_id, source["id"])["candidates"])
-            except DomainError as error:
-                self.store.append_event(
-                    run_id,
-                    "constraint.extraction_skipped",
-                    {"source_id": source["id"], "code": error.code},
-                )
+        with ThreadPoolExecutor(max_workers=min(3, max(1, len(sources)))) as executor:
+            futures = {executor.submit(self.extract_candidates, run_id, source["id"]): source for source in sources}
+            for future in as_completed(futures):
+                source = futures[future]
+                try:
+                    accepted += len(future.result()["candidates"])
+                except DomainError as error:
+                    self.store.append_event(
+                        run_id,
+                        "constraint.extraction_skipped",
+                        {"source_id": source["id"], "code": error.code},
+                    )
         self.store.append_event(
             run_id,
             "tool.completed",
@@ -308,19 +588,43 @@ class ResearchAgent:
         trusted_sources = {
             item["id"] for item in run["sources"] if item.get("trust_tier") in {"korean_official", "korean_research"}
         }
-        selected = [
-            item["id"]
+        eligible = [
+            item
             for item in run["constraints"]
             if item.get("source_id") in trusted_sources
-            and item.get("population_compatibility") == "exact"
+            and item.get("population_compatibility") in {"exact", "broader"}
             and str(item.get("raw_statement", "")).strip()
         ]
+
+        def latest_period(item: dict[str, Any]) -> int:
+            match = re.search(r"PRD_DE\D{0,4}(\d{4})", str(item.get("raw_statement", "")))
+            return int(match.group(1)) if match else 0
+
+        # 서로 다른 범주·교차표의 eq 제약은 모순이 아니므로 모두 승인 대상이다.
+        # 완전히 같은 셀(where 일치)의 중복(연도 중복·재추출)만 걸러내며, exact 우선·최신 연도 우선으로 대표를 고른다.
+        # 광의(broader) 모집단 대리값은 자동 가정 노트를 남겨 승인하고, 보고서·UI에 대리값임을 표기한다.
+        selected_by_cell: dict[tuple, dict[str, Any]] = {}
+        for item in sorted(
+            eligible,
+            key=lambda entry: (entry.get("population_compatibility") != "exact", -latest_period(entry)),
+        ):
+            where = item.get("where") or {}
+            if not where:
+                continue
+            cell = tuple(sorted((str(key), str(value)) for key, value in where.items()))
+            selected_by_cell.setdefault(cell, item)
+        selected = [item["id"] for item in selected_by_cell.values()]
+        override_notes = {
+            item["id"]: "전국·광의 모집단 통계를 대상 집단의 대리값으로 자동 가정했습니다. 대상 모집단의 실측치가 아닙니다."
+            for item in selected_by_cell.values()
+            if item.get("population_compatibility") != "exact"
+        }
         if selected:
-            self.approve_constraints(run_id, {"constraint_ids": selected, "override_notes": {}})
+            self.approve_constraints(run_id, {"constraint_ids": selected, "override_notes": override_notes})
         self.store.append_event(
             run_id,
             "tool.completed",
-            {"tool": "review.approve_constraints", "approved": len(selected), "gate": "exact_population_only"},
+            {"tool": "review.approve_constraints", "approved": len(selected), "gate": "cell_dedup_exact_first"},
         )
         return selected
 
@@ -349,7 +653,7 @@ class ResearchAgent:
         plan = self._latest_policy_plan(run)
         result = run["result"] or {}
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = weighted_segments(result["states"], result["distribution"], evidence_level=evidence_level)
+        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
         review = {
             "status": "COMPLETED_WITHOUT_LLM_INTERVIEWS",
             "plan_id": plan["id"],
@@ -665,8 +969,108 @@ class ResearchAgent:
                 "FEASIBLE_MODEL_REQUIRED", "가중 가상 시민 패널은 PGM 또는 scenario-only 결과 뒤에만 만들 수 있습니다."
             )
         evidence_level = "scenario_only" if result.get("status") == "scenario_only" else "partial_estimate"
-        panel = weighted_segments(result["states"], result["distribution"], evidence_level=evidence_level)
-        interviews = simulate_policy_interviews(panel, plan, int((result.get("personas") or {}).get("seed", 20260801)))
+        panel = sampled_segments(result["states"], result["distribution"], size=12, evidence_level=evidence_level)
+        demo_mode = os.getenv("PERSONA_RESTORER_DEMO_MODEL", "0") == "1"
+
+        # 같은 결합 셀에서 표집된 인물들은 속성이 동일하므로, 셀 대표 1명씩만 모델을 호출하고
+        # 응답을 표본 전체에 복제한다 — 통계는 표본 개수(=분포 비례)로 계산된다.
+        def cell_signature(segment: dict[str, Any]) -> tuple:
+            return tuple((item["variable"], item["value"]) for item in segment["attributes"])
+
+        # 비례 표집에서 좌석을 받지 못한 소수 세그먼트는 침묵하는 사각지대가 되므로 명시적으로 공개한다.
+        total_weight = sum(float(weight) for weight in result["distribution"]) or 1.0
+        sampled_cell_keys = {cell_signature(segment) for segment in panel}
+        omitted_cells = sorted(
+            (
+                {
+                    "attributes": [{"variable": key, "value": value} for key, value in state.items()],
+                    "share": float(weight) / total_weight,
+                }
+                for state, weight in zip(result["states"], result["distribution"])
+                if float(weight) > 0 and tuple(state.items()) not in sampled_cell_keys
+            ),
+            key=lambda item: item["share"],
+            reverse=True,
+        )[:8]
+
+        representatives: dict[tuple, dict[str, Any]] = {}
+        for segment in panel:
+            representatives.setdefault(cell_signature(segment), segment)
+        unique_panel = list(representatives.values())
+        representative_id = {signature: segment["id"] for signature, segment in representatives.items()}
+
+        narrate_pool = ThreadPoolExecutor(max_workers=1)
+        narrate_future = (
+            narrate_pool.submit(narrate_panel_segments, unique_panel, plan.get("policy_focus"))
+            if not demo_mode
+            else None
+        )
+        try:
+            raw_interviews = simulate_policy_interviews(
+                unique_panel, plan, int((result.get("personas") or {}).get("seed", 20260801))
+            )
+            answers_by_representative: dict[str, list[dict[str, Any]]] = {}
+            for item in raw_interviews:
+                answers_by_representative.setdefault(str(item["segment_id"]), []).append(item)
+            interviews = [
+                {**item, "segment_id": segment["id"]}
+                for segment in panel
+                for item in answers_by_representative.get(representative_id[cell_signature(segment)], [])
+            ]
+            if narrate_future is not None:
+                try:
+                    profiles = narrate_future.result()
+                    for segment in panel:
+                        segment["narrative"] = profiles[representative_id[cell_signature(segment)]]
+                except DomainError:
+                    pass
+        finally:
+            narrate_pool.shutdown(wait=False)
+        insights = None
+        if not demo_mode:
+            source_titles = {
+                item["id"]: f"{item.get('organization', '')} · {item.get('title', '')}" for item in run["sources"]
+            }
+            approved_constraints = [
+                {
+                    "where": item.get("where"),
+                    "value": item.get("value"),
+                    "source": source_titles.get(item.get("source_id"), item.get("source_id")),
+                }
+                for item in run.get("constraints", [])
+                if item.get("review_status") == "approved"
+            ]
+            self.store.append_event(run_id, "tool.started", {"tool": "llm.synthesize_insights"})
+            insight_buffer: list[str] = []
+
+            def flush_insight_deltas() -> None:
+                if insight_buffer:
+                    self.store.append_event(run_id, "insight.delta", {"delta": "".join(insight_buffer)})
+                    insight_buffer.clear()
+
+            def on_insight_delta(chunk: str) -> None:
+                insight_buffer.append(chunk)
+                if sum(len(piece) for piece in insight_buffer) >= 120:
+                    flush_insight_deltas()
+
+            try:
+                insights = synthesize_policy_insights(
+                    plan,
+                    panel,
+                    interviews,
+                    str(result.get("status")),
+                    approved_constraints=approved_constraints,
+                    responses=summarize_panel_interviews(panel, interviews),
+                    omitted_cells=omitted_cells,
+                    on_delta=on_insight_delta,
+                )
+                flush_insight_deltas()
+                self.store.append_event(run_id, "tool.completed", {"tool": "llm.synthesize_insights"})
+            except DomainError as error:
+                flush_insight_deltas()
+                self.store.append_event(
+                    run_id, "tool.failed", {"tool": "llm.synthesize_insights", "code": error.code}
+                )
         review = {
             "status": "COMPLETED_WITH_ASSUMPTIONS" if plan.get("assumptions") else "COMPLETED",
             "plan_id": plan["id"],
@@ -675,7 +1079,9 @@ class ResearchAgent:
             "panel_coverage": sum(item["weight"] for item in panel),
             "interviews": interviews,
             "responses": summarize_panel_interviews(panel, interviews),
-            "brief": policy_brief(plan, panel, interviews),
+            "omitted_cells": omitted_cells,
+            "insights": insights,
+            "brief": policy_brief(plan, panel, interviews, insights=insights),
             "warning": "인터뷰는 PGM으로 가중된 완전 합성 패널에 대한 모델 모의 응답입니다. 실제 시민 응답·찬성률·행동·인과효과가 아닙니다.",
         }
         result["policy_review"] = review
@@ -789,49 +1195,75 @@ class ResearchAgent:
             raise DomainError("RESULT_REQUIRED", "보고서 전에 통계 계산을 실행하세요.")
         self.store.update_run(run_id, status="completed")
         report_run = self.store.get_run(run_id)
-        report = render_markdown_report(report_run)
-        html_report = render_html_report(report_run)
-        path = self.store.write_artifact(run_id, "report.md", report)
-        html_path = self.store.write_artifact(run_id, "report.html", html_report)
+        html_path = self.store.write_artifact(run_id, "report.html", render_html_report(report_run))
         policy_review = (report_run.get("result") or {}).get("policy_review")
         downloads: dict[str, str] = {}
         if policy_review:
+            alternative_labels = {
+                item.get("id"): item.get("label") for item in policy_review.get("alternatives", [])
+            }
+            answers_by_persona: dict[str, list[dict[str, Any]]] = {}
+            for item in policy_review.get("interviews", []):
+                answers_by_persona.setdefault(str(item.get("segment_id")), []).append(
+                    {
+                        "policy_id": item.get("policy_id"),
+                        "policy": alternative_labels.get(item.get("policy_id"), item.get("policy_id")),
+                        "response": item.get("response"),
+                        "reason": item.get("reason"),
+                        "barrier": item.get("barrier"),
+                        "suggestion": item.get("suggested_change"),
+                    }
+                )
+            panel_records = [
+                {
+                    "id": segment.get("id"),
+                    "name": segment.get("display_name"),
+                    "attributes": {
+                        attr.get("variable"): attr.get("value") for attr in segment.get("attributes", [])
+                    },
+                    "share": segment.get("weight_display"),
+                    "narrative": segment.get("narrative"),
+                    "answers": answers_by_persona.get(str(segment.get("id")), []),
+                }
+                for segment in policy_review.get("panel", [])
+            ]
+            evidence_payload = {
+                "sources": [
+                    {
+                        key: source.get(key)
+                        for key in (
+                            "id",
+                            "title",
+                            "organization",
+                            "url",
+                            "observed_period",
+                            "trust_tier",
+                            "snapshot_hash",
+                        )
+                    }
+                    for source in report_run["sources"]
+                ],
+                "constraints": report_run["constraints"],
+                "excluded_sources": ((report_run.get("result") or {}).get("research") or {}).get(
+                    "excluded_sources", []
+                ),
+            }
             downloads = {
-                "policy_brief": self.store.write_artifact(run_id, "policy_brief.md", policy_review["brief"]),
                 "panel": self.store.write_artifact(
                     run_id,
                     "panel.jsonl",
-                    "\n".join(json.dumps(item, ensure_ascii=False) for item in policy_review["panel"]) + "\n",
-                ),
-                "interviews": self.store.write_artifact(
-                    run_id,
-                    "interviews.jsonl",
-                    "\n".join(json.dumps(item, ensure_ascii=False) for item in policy_review["interviews"]) + "\n",
+                    "\n".join(json.dumps(item, ensure_ascii=False) for item in panel_records) + "\n",
                 ),
                 "evidence": self.store.write_artifact(
-                    run_id,
-                    "evidence.json",
-                    json.dumps(
-                        {
-                            "sources": report_run["sources"],
-                            "constraints": report_run["constraints"],
-                            "excluded_sources": ((report_run.get("result") or {}).get("research") or {}).get(
-                                "excluded_sources", []
-                            ),
-                            "search_candidates": ((report_run.get("result") or {}).get("research") or {}).get(
-                                "candidates", []
-                            ),
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
+                    run_id, "evidence.json", json.dumps(evidence_payload, ensure_ascii=False, indent=2)
                 ),
             }
-        self.store.append_event(run_id, "report.completed", {"artifact": path})
+        for stale in ("report.md", "policy_brief.md", "interviews.jsonl"):
+            (self.store.run_dir / run_id / stale).unlink(missing_ok=True)
+        self.store.append_event(run_id, "report.completed", {"artifact": html_path})
         self._persist_manifest(run_id)
         return {
-            "markdown": report,
-            "artifact": path,
+            "artifact": html_path,
             "html_artifact": html_path,
             "report_url": f"/api/runs/{run_id}/artifacts/report.html",
             "downloads": {key: f"/api/runs/{run_id}/artifacts/{Path(value).name}" for key, value in downloads.items()},
@@ -843,77 +1275,3 @@ class ResearchAgent:
         stable = json.dumps(run, ensure_ascii=False, sort_keys=True)
         self.store.write_artifact(run_id, "run.json", stable)
         self.store.append_event(run_id, "artifact.persisted", {"sha256": hashlib.sha256(stable.encode()).hexdigest()})
-
-    @staticmethod
-    def _render_report(run: dict[str, Any]) -> str:
-        result = run["result"] or {}
-        lines = [
-            "# 페르소나 복원기 연구 보고서",
-            "",
-            "## 질문과 대상",
-            f"- 질문: {run['question']}",
-            f"- 대상 힌트: {run['target_population']}",
-            "",
-            "## 증거와 승인 제약",
-            *[
-                f"- `{item['id']}` {item['where']} {item['relation']} {item['value']} — {item['review_status']} / source `{item['source_id']}`"
-                for item in run["constraints"]
-            ],
-            "",
-            "## 제약 상태",
-            f"- 상태: {result.get('status')}",
-        ]
-        if result.get("status") == "infeasible":
-            lines += [
-                f"- 충돌 core: {', '.join(result.get('conflict_core', []))}",
-                "- 결론: 제약이 양립하지 않아 점추정·페르소나 생성을 수행하지 않았습니다.",
-            ]
-        else:
-            identification = result.get("identification", {})
-            lines += [
-                "",
-                "## 수치 결과",
-                f"- 최대엔트로피 점추정: {result.get('maximum_entropy', {}).get('point_estimate')}",
-                f"- 가정 없는 식별구간: {identification.get('lower')} – {identification.get('upper')}",
-                f"- 선택된 표집 모델: {result.get('selected_model')}",
-                f"- 가정: {result.get('assumption')}",
-            ]
-            if result.get("structure_sensitivity"):
-                lines += [
-                    "",
-                    "## 구조 민감도",
-                    *[
-                        f"- `{item['id']}`: {item['status']}; 점추정={item.get('point_estimate')}; residual={item.get('residual')}"
-                        for item in result["structure_sensitivity"]
-                    ],
-                ]
-        if result.get("survey"):
-            survey = result["survey"]
-            lines += [
-                "",
-                "## 합성 설문",
-                f"- 응답 수: {survey['n']}; 방식: {survey['mode']}",
-                f"- 집계: {survey['counts']}",
-                f"- 경고: {survey['warning']}",
-            ]
-        if result.get("holdout", {}).get("evaluation"):
-            evaluation = result["holdout"]["evaluation"]
-            lines += [
-                "",
-                "## 봉인 홀드아웃 채점",
-                f"- 예측 hash: `{result['holdout']['prediction_hash']}`",
-                f"- Total variation distance: {evaluation['tv_distance']}",
-                f"- 실제 관심량: {evaluation['actual_estimand']}",
-                f"- 식별구간 coverage: {evaluation['interval_covered']}",
-            ]
-        lines += [
-            "",
-            "## 한계",
-            "- 이것은 공개된 통계 제약과 명시적 구조 가정에서 만든 합성 분석이며 실제 여론조사나 인과추론이 아닙니다.",
-            "- 웹 원문, 범주 매핑, 모집단 정합화는 승인 이력과 run artifact에서 재검토해야 합니다.",
-            "",
-            "## 재현 정보",
-            f"- run id: `{run['id']}`",
-            f"- 마지막 상태: `{run['status']}`",
-        ]
-        return "\n".join(lines) + "\n"

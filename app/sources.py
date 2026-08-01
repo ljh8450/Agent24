@@ -59,21 +59,30 @@ DATA_GO_ENDPOINTS = {
 
 
 class _TextExtractor(HTMLParser):
+    _SKIP_TAGS = {"script", "style", "noscript", "svg", "template"}
+
     def __init__(self) -> None:
         super().__init__()
         self.parts: list[str] = []
         self.title = ""
         self._in_title = False
+        self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "title":
             self._in_title = True
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "title":
             self._in_title = False
+        if tag in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
 
     def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
         cleaned = " ".join(data.split())
         if cleaned:
             self.parts.append(cleaned)
@@ -327,6 +336,48 @@ def fetch_source(root: Path, url: str, metadata: dict[str, object]) -> Source:
     return _store_download(root, url, url, metadata)
 
 
+def search_kosis_tables(query: str, count: int = 3) -> list[dict[str, str]]:
+    """KOSIS 통합검색 OpenAPI: find published tables whose title matches a plan variable."""
+    api_key = os.getenv("KOSIS_API_KEY")
+    if not api_key:
+        raise DomainError(
+            "KOSIS_KEY_REQUIRED", "KOSIS_API_KEY를 환경 변수로 설정하면 KOSIS OpenAPI를 검색할 수 있습니다."
+        )
+    parameters = {
+        "method": "getList",
+        "apiKey": api_key,
+        "searchNm": query,
+        "format": "json",
+        "jsonVD": "Y",
+        "startCount": "1",
+        "resultCount": str(count),
+    }
+    request = Request(
+        f"https://kosis.kr/openapi/statisticsSearch.do?{urlencode(parameters)}",
+        headers={"User-Agent": "persona-restorer/1.0"},
+    )
+    try:
+        with build_opener().open(request, timeout=20) as response:
+            rows = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as error:
+        raise DomainError(
+            "KOSIS_SEARCH_FAILED", "KOSIS 통합검색 호출에 실패했습니다.", details={"reason": type(error).__name__}
+        ) from error
+    if not isinstance(rows, list):
+        return []
+    return [
+        {
+            "org_id": str(row.get("ORG_ID", "")),
+            "table_id": str(row.get("TBL_ID", "")),
+            "table_name": str(row.get("TBL_NM", "")),
+            "survey_name": str(row.get("STAT_NM", "")),
+            "path": str(row.get("MT_ATITLE", "")),
+        }
+        for row in rows
+        if isinstance(row, dict) and row.get("ORG_ID") and row.get("TBL_ID")
+    ]
+
+
 def fetch_kosis_statistics(root: Path, payload: dict[str, object]) -> Source:
     api_key = os.getenv("KOSIS_API_KEY")
     if not api_key:
@@ -439,4 +490,16 @@ def source_excerpt(root: Path, source: dict[str, object], maximum_characters: in
     candidate = (root / relative).resolve()
     if root not in candidate.parents or not candidate.is_file():
         raise DomainError("SOURCE_ARTIFACT_MISSING", "출처 스냅샷 파일을 찾을 수 없습니다.")
-    return candidate.read_text(encoding="utf-8", errors="replace")[:maximum_characters]
+    content = candidate.read_text(encoding="utf-8", errors="replace")
+    # Raw HTML wastes the excerpt budget on markup and scripts; keep the visible text so
+    # the numbers a statistics page publishes actually reach the extraction model.
+    if "<html" in content[:2000].lower() or "<!doctype" in content[:200].lower() or "</div>" in content:
+        extractor = _TextExtractor()
+        try:
+            extractor.feed(content)
+            text = "\n".join(extractor.parts)
+            if text.strip():
+                content = text
+        except Exception:
+            pass
+    return content[:maximum_characters]
