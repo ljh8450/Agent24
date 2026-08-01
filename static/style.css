@@ -310,5 +310,10 @@ aside.study-inspector { display:none !important; }
 }
 
 
+.attach-chip[hidden] { display:none; }
 .attach-chip { display:inline-flex; align-items:center; gap:6px; margin:0 0 6px 14px; padding:3px 10px; border:1px solid var(--border-light); border-radius:999px; font-size:11px; color:var(--text-tertiary); background:#161616; }
 .attach-chip button { background:none; border:0; color:inherit; cursor:pointer; font-size:12px; }
+
+.chat-attachment { margin-top:6px; padding:8px 12px; border:1px solid var(--border-light); border-radius:10px; background:#161616; font-size:12px; }
+.chat-attachment strong { display:block; margin-bottom:4px; }
+.chat-attachment blockquote { margin:4px 0 0; padding-left:10px; border-left:2px solid var(--border-light); color:var(--text-tertiary); white-space:pre-wrap; }
