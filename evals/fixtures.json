@@ -1,0 +1,71 @@
+{
+  "happy-success": {
+    "id": "fixture-happy",
+    "status": "completed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "tool.started", "payload": {"tool": "policy.plan_request"}},
+      {"type": "review.required", "payload": {"reason": "constraint approval"}},
+      {"type": "review.accepted", "payload": {}},
+      {"type": "tool.started", "payload": {"tool": "statistics.identification_bounds"}},
+      {"type": "tool.completed", "payload": {"tool": "statistics.identification_bounds"}},
+      {"type": "tool.started", "payload": {"tool": "personas.sample_joint_distribution"}},
+      {"type": "tool.started", "payload": {"tool": "policy.weighted_panel_interviews"}},
+      {"type": "tool.started", "payload": {"tool": "report.write_provenance"}},
+      {"type": "run.completed", "payload": {}}
+    ],
+    "result": {"outcome": "SUCCESS", "intent": "policy_review", "target": {"region": "서울", "population": "청년"}}
+  },
+  "safe-blocked": {
+    "id": "fixture-safe",
+    "status": "failed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "policy.blocked", "payload": {"reason": "개인 자격 판정은 지원하지 않습니다."}},
+      {"type": "run.failed", "payload": {"code": "UNSAFE"}}
+    ],
+    "result": {"outcome": "UNSAFE", "intent": "policy_review", "reason": "개인 자격 판정은 지원하지 않습니다.", "next_action": "정책 연구 질문으로 범위를 좁혀 다시 요청하세요."}
+  },
+  "target-extracted": {
+    "id": "fixture-target",
+    "status": "completed",
+    "events": [{"type": "run.accepted", "payload": {}}, {"type": "run.completed", "payload": {}}],
+    "result": {"outcome": "SUCCESS", "intent": "clarify", "target": {"region": "부산", "population": "청년"}}
+  },
+  "conversation": {
+    "id": "fixture-conversation",
+    "status": "completed",
+    "events": [{"type": "run.accepted", "payload": {}}, {"type": "run.completed", "payload": {}}],
+    "result": {"outcome": "SUCCESS", "intent": "conversation"}
+  },
+  "clarify-blocked": {
+    "id": "fixture-clarify",
+    "status": "blocked",
+    "events": [{"type": "run.accepted", "payload": {}}, {"type": "policy.blocked", "payload": {"reason": "대상과 행동이 부족합니다."}}],
+    "result": {"outcome": "BLOCKED", "intent": "clarify", "reason": "대상과 행동이 부족합니다.", "next_action": "지역과 대상 행동을 한 문장으로 추가하세요."}
+  },
+  "contract-failed": {
+    "id": "fixture-contract",
+    "status": "failed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "tool.started", "payload": {"tool": "constraint.validate"}},
+      {"type": "tool.failed", "payload": {"tool": "constraint.validate", "code": "CONTRACT_INVALID"}},
+      {"type": "run.failed", "payload": {"code": "CONTRACT_INVALID"}}
+    ],
+    "result": {"outcome": "BLOCKED", "reason": "분모 계약이 유효하지 않습니다.", "next_action": "분모와 모집단 정의를 확인하세요."}
+  },
+  "partial-failure": {
+    "id": "fixture-partial",
+    "status": "completed",
+    "events": [
+      {"type": "run.accepted", "payload": {}},
+      {"type": "review.required", "payload": {"reason": "constraint approval"}},
+      {"type": "review.accepted", "payload": {}},
+      {"type": "tool.started", "payload": {"tool": "statistics.identification_bounds"}},
+      {"type": "tool.failed", "payload": {"tool": "statistics.identification_bounds", "code": "SOURCE_TIMEOUT"}},
+      {"type": "completion.partial", "payload": {"reason": "공개 통계를 확인하지 못했습니다."}}
+    ],
+    "result": {"outcome": "PARTIAL", "reason": "공개 통계를 확인하지 못했습니다.", "next_action": "다음 검색 후보를 검토하세요."}
+  }
+}

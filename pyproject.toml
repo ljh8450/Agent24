@@ -9,7 +9,7 @@ dependencies = ["great-tables>=0.19", "numpy>=2.0", "pandas>=2.2", "pypdf>=5.9",
 include = ["app*"]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.14"]
+dev = ["pytest>=8.3", "ruff>=0.14"]
 
 [tool.ruff]
 target-version = "py312"
