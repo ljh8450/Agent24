@@ -353,3 +353,9 @@ class BriefWordingTests(unittest.TestCase):
 
         # 인사이트 모델에는 자릿수가 정리된 퍼센트만 넘긴다 ('12.422222%' 방지)
         self.assertEqual(_percent_shares({"original": {"support": 0.12422222}}), {"original": {"support": "12.4%"}})
+        from app.personas import _display_shares
+
+        self.assertEqual(
+            _display_shares([{"attributes": [], "share": 0.10833333334}]),
+            [{"attributes": [], "share": "10.8%"}],
+        )

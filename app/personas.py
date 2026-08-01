@@ -142,6 +142,15 @@ def _call_synthesis_model(prompt: str) -> dict[str, Any]:
     return _call_json_model(prompt)
 
 
+def _display_shares(cells: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Same reason as _percent_shares: a raw 0.10833333334 came back as '10.833333334%'."""
+    return [
+        {**cell, "share": f"{float(cell.get('share', 0.0)) * 100:.1f}%"}
+        for cell in (cells or [])
+        if isinstance(cell, dict)
+    ]
+
+
 def _percent_shares(responses: dict[str, Any] | None) -> dict[str, dict[str, str]]:
     """Hand the writer print-ready percentages; raw fractions came back as '12.422222%'."""
     return {
@@ -203,7 +212,8 @@ def synthesize_policy_insights(
         f"Approved real-statistic constraints (these axes carry REAL population weights): {json.dumps(approved_constraints or [], ensure_ascii=False)}\n"
         "Weighted response shares per alternative (panel weights already applied), as ready-to-print percentages — "
         f"quote them exactly as given, never re-derive or add digits: {json.dumps(_percent_shares(responses), ensure_ascii=False)}\n"
-        f"Cells with positive share but ZERO seats in the sample (unheard groups — address them explicitly in 사각지대와 리스크): {json.dumps(omitted_cells or [], ensure_ascii=False)}\n"
+        "Cells with positive share but ZERO seats in the sample (unheard groups — address them explicitly in "
+        f"사각지대와 리스크); quote the given share exactly: {json.dumps(_display_shares(omitted_cells), ensure_ascii=False)}\n"
         f"Panel: {json.dumps(compact_panel, ensure_ascii=False)}\n"
         f"Interviews: {json.dumps(compact_interviews, ensure_ascii=False)}"
     )
